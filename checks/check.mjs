@@ -74,36 +74,66 @@ function collect(root) {
   return { files, problems };
 }
 
-const cssUnescape = (s) =>
-  s.replace(/\\(?:([0-9a-fA-F]{1,6})\s?|([\s\S]))/g, (_, hex, ch) =>
-    hex === undefined ? ch : String.fromCodePoint(Math.min(parseInt(hex, 16), 0x10ffff)));
+const isBlank = (c) => c === " " || c === "\t" || c === "\n" || c === "\r" || c === "\f";
+// Only the start of a URL decides whether it is on another origin, so a value is read
+// no further than this many characters that a browser would keep (leading control
+// characters and spaces, tabs and carriage returns are dropped, not counted). It also
+// keeps a run of "url(url(url(..." from going quadratic.
+const MAX_URL_READ = 256;
+
+// The value of a url(...) whose contents start at `i`, read as the CSS tokenizer reads
+// it: a backslash escape is up to six hex digits plus one optional whitespace (or any
+// one character), a quoted value ends at its closing quote, at a raw newline or at the
+// end of the file, and an unquoted one at ")" or whitespace. What was read before a
+// break still counts: a reader that gave up there would pass what it never looked at.
+function readCssUrl(text, i) {
+  while (isBlank(text[i])) i += 1;
+  const quote = text[i] === '"' || text[i] === "'" ? text[i++] : "";
+  let out = "";
+  while (i < text.length && out.length < MAX_URL_READ) {
+    const c = text[i];
+    if (c === "\\") {
+      const hex = /^([0-9a-fA-F]{1,6})(?:\r\n|[ \t\n\r\f])?/.exec(text.slice(i + 1, i + 9));
+      if (hex) {
+        out += String.fromCodePoint(Math.min(parseInt(hex[1], 16), 0x10ffff));
+        i += 1 + hex[0].length;
+      } else {
+        if (text[i + 1] !== undefined && text[i + 1] !== "\n") out += text[i + 1];
+        i += 2;
+      }
+    } else if (quote ? c === quote || c === "\n" : c === ")" || isBlank(c)) {
+      break;
+    } else if (c === "\t" || c === "\r" || (out === "" && c <= " ")) {
+      i += 1;
+    } else {
+      out += c;
+      i += 1;
+    }
+  }
+  return out;
+}
 
 function offOrigin(text) {
   const found = [];
-  const patterns = [
-    [/(?<![\w-])(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi, (v) => v],
-    // Only the start of the value matters, so there is no closing-paren match to backtrack on.
-    [/url\(\s*(?:"((?:[^"\\]|\\[\s\S])*)"|'((?:[^'\\]|\\[\s\S])*)'|([^\s"')]*))/gi, cssUnescape],
-  ];
-  for (const [re, decode] of patterns) {
-    for (const m of text.matchAll(re)) {
-      // Browsers strip leading and trailing C0 controls and spaces, drop tabs and
-      // newlines inside a URL, and read a backslash as a slash in http(s) URLs.
-      const value = decode(m[1] ?? m[2] ?? m[3] ?? "")
-        .replace(/^[\u0000- ]+|[\u0000- ]+$/g, "")
-        .replace(/[\t\n\r]/g, "")
-        .replace(/\\/g, "/");
-      if (/^(?:https?:|\/\/)/i.test(value)) {
-        found.push(`${lineOf(text, m.index)}: URL on another origin: ${value}`);
-      }
+  const add = (index, raw) => {
+    // Browsers strip leading C0 controls and spaces, drop tabs and newlines inside a URL,
+    // and read a backslash as a slash in http(s) URLs.
+    const value = raw.replace(/^[\u0000- ]+/, "").replace(/[\t\n\r]/g, "").replace(/\\/g, "/");
+    if (/^(?:https?:|\/\/)/i.test(value)) {
+      found.push(`${lineOf(text, index)}: URL on another origin: ${value.slice(0, 200)}`);
     }
+  };
+  for (const m of text.matchAll(/(?<![\w-])(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi)) {
+    add(m.index, m[1] ?? m[2] ?? m[3]);
   }
+  for (const m of text.matchAll(/url\(/gi)) add(m.index, readCssUrl(text, m.index + m[0].length));
   return found;
 }
 
 // Returns a "line: message" string for the first problem, or null.
 function parseProblem(text) {
   const stack = [];
+  let foreign = 0; // how many svg and math elements are open on the stack
   const at = (index, msg) => `${lineOf(text, index)}: ${msg}`;
   let i = 0;
   while ((i = text.indexOf("<", i)) !== -1) {
@@ -137,6 +167,7 @@ function parseProblem(text) {
           return at(stack[j].index, `<${stack[j].name}> is not closed before </${name}> on line ${lineOf(text, i)}`);
         }
       }
+      for (let j = k; j < stack.length; j++) if (isForeign(stack[j].name)) foreign -= 1;
       stack.length = k;
       i += m[0].length;
     } else if (/[A-Za-z]/.test(text[i + 1] ?? "")) {
@@ -147,10 +178,9 @@ function parseProblem(text) {
       const start = i;
       i += m[0].length;
       // Inside inline SVG and MathML, "/>" closes an element (<path/>); in HTML it is ignored.
-      const selfClosed =
-        m[3] === "/" && (isForeign(name) || stack.some((e) => isForeign(e.name)));
-      if (VOID.has(name) || selfClosed) continue;
+      if (VOID.has(name) || (m[3] === "/" && (isForeign(name) || foreign > 0))) continue;
       stack.push({ name, index: start });
+      if (isForeign(name)) foreign += 1;
       if (RAW_TEXT.has(name)) {
         const close = new RegExp(`</${name}[\\s/>]`, "gi");
         close.lastIndex = i;
