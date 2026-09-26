@@ -75,9 +75,15 @@ const OPTIONAL_END = new Set([
   "tfoot", "option", "optgroup", "colgroup", "caption", "rt", "rp",
 ]);
 const RAW_TEXT = new Set(["script", "style", "textarea", "title"]);
-const START_TAG =
-  /<([A-Za-z][A-Za-z0-9-]*)((?:\s+[^\s"'<>\/=]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*)\s*(\/?)>/y;
-const END_TAG = /<\/([A-Za-z][A-Za-z0-9-]*)\s*>/y;
+// HTML's whitespace is these five characters. JavaScript's \s also takes NBSP, VT and more,
+// which a browser reads as part of a name or a value, so it would end a tag somewhere else.
+const WS = "[ \\t\\n\\f\\r]";
+const NOT_WS = " \\t\\n\\f\\r";
+const START_TAG = new RegExp(
+  `<([A-Za-z][A-Za-z0-9-]*)((?:${WS}+[^${NOT_WS}"'<>/=]+(?:${WS}*=${WS}*(?:"[^"]*"|'[^']*'|[^${NOT_WS}"'=<>\`]+))?)*)${WS}*(/?)>`,
+  "y",
+);
+const END_TAG = new RegExp(`</([A-Za-z][A-Za-z0-9-]*)${WS}*>`, "y");
 
 class Blind extends Error {}
 
@@ -169,11 +175,15 @@ function readCssUrl(text, i) {
 
 // The attributes whose value the browser loads or submits to, and href, which is a load
 // everywhere except on <a>. A name that follows a word character or "-" (data-src) is a
-// different attribute, and xlink:href still matches.
+// different attribute, and xlink:href still matches. The value is read in a lookahead, so
+// a match ends at the "=" and the scan goes on inside the value: a quote that never closes
+// (prose such as data=') cannot swallow the tags after it and hide their attributes.
 const URL_ATTR =
-  /(?<![\w-])(src|srcset|imagesrcset|poster|data|action|formaction|ping|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi;
+  /(?<![\w-])(src|srcset|imagesrcset|poster|data|action|formaction|ping|attributionsrc|href)\s*=\s*(?=(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))/gi;
 // These hold several URLs, separated by whitespace and commas.
-const URL_LIST = new Set(["srcset", "imagesrcset", "ping"]);
+const URL_LIST = new Set(["srcset", "imagesrcset", "ping", "attributionsrc"]);
+// @import, spelled the way the CSS tokenizer reads a keyword: escapes decoded, any case.
+const IMPORT_OPEN = new RegExp("@" + [..."import"].map(cssLetter).join(""), "gi");
 
 // Does the sorted list of disjoint [start, end) spans contain index?
 function inSpans(spans, index) {
@@ -225,7 +235,7 @@ function offOrigin(text, anchors = [], metas = []) {
     if (target) add(index + c.index, target);
   }
   for (const m of text.matchAll(URL_OPEN)) add(m.index, readCssUrl(text, m.index + m[0].length));
-  for (const m of text.matchAll(/@import\s*/gi)) add(m.index, readCssUrl(text, m.index + m[0].length));
+  for (const m of text.matchAll(IMPORT_OPEN)) add(m.index, readCssUrl(text, m.index + m[0].length));
   return found;
 }
 
@@ -291,7 +301,7 @@ function walk(text, out) {
       stack.push({ name, index: start });
       if (isForeign(name)) foreign += 1;
       if (RAW_TEXT.has(name)) {
-        const close = new RegExp(`</${name}[\\s/>]`, "gi");
+        const close = new RegExp(`</${name}[ \\t\\n\\f\\r/>]`, "gi");
         close.lastIndex = i;
         const c = close.exec(text);
         if (!c) return at(stack.at(-1).index, `unterminated <${name}>`);

@@ -35,12 +35,14 @@ const STATEMENTS = [
   ['index.html never says what Linkling is (looked for "link shortener")', /\blink[ -]shortener\b/],
   [
     'index.html never says clicks are not tracked (looked for "nobody who clicks ... is tracked", "tracks nobody" or "not tracked")',
-    /\b(?:nobody|no[ -]one)\b[^.!?]*\btracked\b|\btracks (?:nobody|no[ -]one)\b|\b(?:not|never) (?:be )?tracked\b/,
+    // The one tracked is the one who clicks: "nobody (who clicks ...) is tracked", "tracks nobody",
+    // "are not tracked". "Nobody likes being tracked" and "whether or not tracked" are not it.
+    /\b(?:nobody|no[ -]one)\b(?: who [^.!?]*)? (?:is|gets|will be) (?:ever )?tracked\b|\btracks (?:nobody|no[ -]one)\b|\b(?:are|is|be|being|were)(?: not|n['’]t| never) tracked\b/,
   ],
 ];
-// Elements whose content is not page copy: the parser reads it as raw text or the browser
+// Elements whose content is not page copy: the parser reads it as raw text, or the browser
 // shows it somewhere other than in the page.
-const HIDDEN = new Set(["script", "style", "title", "textarea"]);
+const HIDDEN = new Set(["script", "style", "title", "textarea", "noscript", "template"]);
 
 // One pass, no backtracking. A comment ends at the first "-->", an unterminated one runs to
 // the end of the file; a tag ends at the first ">" outside quotes; a hidden element ends at
@@ -82,14 +84,14 @@ function visibleText(html) {
     i = j + 1;
     if (name && HIDDEN.has(name)) {
       // HTML ignores a "/" in these start tags, so <title/> is still open.
-      const close = new RegExp(`</${name}(?=[\\s/>])`, "gi");
+      const close = new RegExp(`</${name}(?=[ \\t\\n\\f\\r/>])`, "gi");
       close.lastIndex = i;
       const c = close.exec(html);
       const gt = c ? html.indexOf(">", c.index) : -1;
       i = gt === -1 ? html.length : gt + 1;
     }
   }
-  return out.replace(/\s+/g, " ").toLowerCase();
+  return out.replace(/&nbsp;|&#160;|&#xa0;/gi, " ").replace(/\s+/g, " ").toLowerCase();
 }
 
 function run(root) {

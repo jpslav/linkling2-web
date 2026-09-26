@@ -228,6 +228,24 @@ ntpFail("fail-empty-comment-form-hides-a-div", site("<!--> <div> <!-- x -->"), /
 ntpFail("fail-comment-ending-bang-hides-a-div", site("<!-- a --!> <div> <!-- b -->"), /<div> is not closed before <\/body>/);
 ntpFail("gap-script-double-escape-is-a-stray-end-tag", site("<script>\n<!--\n<script>x</script>\n-->\n</script>"), /stray <\/script>/);
 
+// Where the walk and a browser could disagree about where a tag ends. HTML whitespace is
+// space, tab, LF, FF and CR; NBSP and VT are part of a name or a value, so a tag that a
+// loose \s would end early must not hide the <link> that follows it.
+const LINK_ITEM = '<link rel=stylesheet href=https://evil.example/x.css>';
+ntpFail("fail-tag-nbsp-before-quote-does-not-hide-a-link", site(`<a x= ">${LINK_ITEM}">x</a>`), HREF_NOT_A);
+ntpFail("fail-tag-vt-before-quote-does-not-hide-a-link", site(`<a x=\u000b">${LINK_ITEM}">x</a>`), HREF_NOT_A);
+ntpFail("fail-script-end-tag-with-nbsp-is-not-an-end-tag", site(`<script></script ><a title="</script>${LINK_ITEM}">x</a>`), HREF_NOT_A);
+// A quote that never closes in prose must not swallow the tags after it and their attributes.
+ntpFail("fail-unclosed-quote-in-prose-does-not-hide-a-link", site("<p>ok</p>", { head: `<meta name="description" content="Tip: set data='">\n${LINK_ITEM}\n<meta name="author" content="O'Brien">\n` }), HREF_NOT_A);
+ntpFail("fail-unclosed-quote-after-src-does-not-hide-a-link", site("<p>ok</p>", { head: `<meta name="description" content="see src='">\n${LINK_ITEM}\n<meta name="author" content="O'Brien">\n` }), HREF_NOT_A);
+ntpFail("fail-attributionsrc", site('<img src="a.png" attributionsrc="https://evil.example/r" alt="">'), OFF);
+ntpFail("fail-attributionsrc-second-url", site('<a href="x.html" attributionsrc="/r https://evil.example/r">x</a>'), OFF);
+ntpFail("fail-css-import-escaped-keyword", site('<style>@\\69mport "https://evil.example/x.css";</style>'), OFF);
+ntpFail("fail-css-import-uppercase-keyword", cssSite('@IMPORT "https://evil.example/x.css";'), OFF);
+// What the header still says it does not cover, pinned like the other gaps.
+ntpPass("gap-css-import-with-a-comment-passes", cssSite('@import/**/"https://evil.example/x.css";'));
+ntpPass("gap-meta-refresh-entity-encoded-passes", site("<p>ok</p>", { head: '<meta http-equiv="&#114;efresh" content="0;url=https://evil.example/">\n' }));
+
 // ---- R-023 blind: exit 2, could not look
 const ONE_PAGE = () => ({ "index.html": page("<p>ok</p>") });
 add({ name: "blind-root-missing", tool: NTP, files: {}, root: (_r, dir) => join(dir, "does-not-exist"), exit: 2, out: /no-third-party: BLIND, cannot read site root/ });
@@ -265,6 +283,30 @@ const withoutEngine = ({ tool, target, dir }) => {
 };
 ntpBlind("blind-node-absent", ONE_PAGE(), /no-third-party: BLIND, node is not on PATH/, { spawn: withoutNode });
 ntpBlind("blind-engine-absent", ONE_PAGE(), /no-third-party: BLIND, .*check\.mjs is missing or unreadable/, { spawn: withoutEngine });
+// The engine is there but does not say what it found: an entry point passes on an exit code
+// only when the engine's last word agrees with it. `source` gets the entry point's prefix.
+const withEngine = (source) => ({ tool, target, dir }) => {
+  const lone = join(dir, "lone");
+  mkdirSync(lone);
+  const copy = join(lone, basename(tool));
+  copyFileSync(tool, copy);
+  const landing = basename(tool) === "landing.sh";
+  writeFileSync(join(lone, landing ? "landing.mjs" : "check.mjs"), source(landing ? "landing" : "no-third-party"));
+  return spawnSync("sh", [copy, target], { encoding: "utf8", env: nodeEnv(), timeout: TIMEOUT_MS, maxBuffer: MAX_BUFFER });
+};
+const SILENT_ENGINES = {
+  empty: [() => "", 0],
+  "syntax-error": [() => "this is not javascript (\n", 1],
+  "says-pass-but-exits-1": [(w) => `console.log("${w}: PASS, x"); process.exitCode = 1;\n`, 1],
+  "says-fail-but-exits-0": [(w) => `console.error("${w}: FAIL, x"); process.exitCode = 0;\n`, 0],
+  "says-blind-but-exits-1": [(w) => `console.error("${w}: BLIND, x"); process.exitCode = 1;\n`, 1],
+  killed: [() => 'process.kill(process.pid, "SIGKILL");\n', 137],
+};
+for (const [label, [source, rc]] of Object.entries(SILENT_ENGINES)) {
+  for (const [prefix, tool, word, engine] of [["blind", NTP, "no-third-party", "check"], ["blind-landing", LANDING, "landing", "landing"]]) {
+    add({ name: `${prefix}-engine-${label}`, tool, files: ONE_PAGE(), exit: 2, out: new RegExp(`${word}: BLIND, ${engine}\\.mjs exited ${rc} without saying`), spawn: withEngine(source) });
+  }
+}
 
 // ---- Speed: the LL-001 reviewers found inputs that took seconds to minutes. Each must finish.
 const perfSite = (css, body = "<p>ok</p>") => site(body, { css });
@@ -285,6 +327,10 @@ lanPass("pass-landing-words-split-by-tags-and-lines", "<p>Linkling is a <strong>
 lanPass("pass-landing-lt-in-text", "<p>Linkling 1 < 2 is a link shortener. Nobody who clicks is tracked.</p>");
 lanPass("pass-landing-gt-in-attribute", '<p title="a>b">Linkling is a link shortener. Nobody who clicks is tracked.</p>');
 lanPass("pass-landing-in-link-text", '<p>Linkling is a link shortener. <a href="https://example.com/">Nobody who clicks is tracked</a>.</p>');
+lanPass("pass-landing-arent-tracked", "<p>Linkling is a link shortener. Clicks aren't tracked.</p>");
+lanPass("pass-landing-gets-tracked", "<p>Linkling is a link shortener. No one who clicks a short link gets tracked.</p>");
+lanPass("pass-landing-ever-tracked", "<p>Linkling is a link shortener. Nobody is ever tracked.</p>");
+lanPass("pass-landing-non-breaking-spaces", "<p>Linkling is a link&nbsp;shortener. Nobody who clicks&nbsp;is tracked.</p>");
 
 // ---- R-021 failing: exit 1, and which statement is missing
 const NAMES = /landing: index\.html never names Linkling in its text/;
@@ -303,6 +349,15 @@ lanFail("fail-landing-promise-only-in-a-textarea", "<p>Linkling is a link shorte
 lanFail("fail-landing-unterminated-comment-swallows-the-promise", "<p>Linkling is a link shortener.</p><!-- <p>Nobody who clicks is tracked.</p>", CLAIM);
 lanFail("fail-landing-the-opposite-claim", "<p>Linkling is a link shortener. Everyone who clicks is tracked.</p>", CLAIM);
 lanFail("fail-landing-nobody-and-tracked-in-different-sentences", "<p>Linkling is a link shortener. Nobody is asked to sign in. Every click is tracked.</p>", CLAIM);
+// Sentences that use the words and promise the opposite, or nothing.
+lanFail("fail-landing-nobody-likes-being-tracked", "<p>Linkling is a link shortener with a stats page that shows who clicked each link.</p><p>Nobody likes being tracked, so we keep those stats private to your team.</p>", CLAIM);
+lanFail("fail-landing-nobody-wants-to-be-tracked", "<p>Linkling is a link shortener. Nobody wants to be tracked, but every click is.</p>", CLAIM);
+lanFail("fail-landing-whether-or-not-tracked", "<p>Linkling is a link shortener. Whether or not tracked by us, every click is logged by the host.</p>", CLAIM);
+// Text a visitor does not see as page copy.
+lanFail("fail-landing-promise-only-in-a-noscript", "<p>Linkling is a link shortener.</p><noscript>Nobody who clicks is tracked.</noscript>", CLAIM);
+lanFail("fail-landing-promise-only-in-a-template", "<p>Linkling is a link shortener.</p><template><p>Nobody who clicks is tracked.</p></template>", CLAIM);
+// </script followed by NBSP is not an end tag, so the promise below it is still script text.
+lanFail("fail-landing-script-end-tag-with-nbsp-is-not-an-end-tag", "<p>Linkling is a link shortener.</p><script>var a=1;</script ><p>Nobody who clicks is tracked.</p><script>var b=2;</script>", CLAIM);
 add({ name: "fail-landing-empty-index", tool: LANDING, files: { "index.html": "" }, exit: 1, out: /landing: FAIL, 3 of 3 statements missing/ });
 add({ name: "fail-landing-no-index-html", tool: LANDING, files: { "other.html": page(GOOD) }, exit: 1, out: /landing: no index\.html at .*\n.*landing: FAIL, the landing page is not there/ });
 add({ name: "fail-landing-empty-root", tool: LANDING, files: {}, exit: 1, out: /landing: FAIL, the landing page is not there/ });
