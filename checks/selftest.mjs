@@ -250,6 +250,19 @@ ntpPass("pass-a-href-query-carries-an-action-url", site('<a href="https://a.exam
 ntpPass("pass-relative-src-query-carries-an-absolute-url", site('<img src="/proxy?src=https://b.example/x.png" alt="">'));
 ntpFail("fail-real-src-after-an-a-with-a-src-query", site('<a href="https://a.example/e?src=https://b.example/v.mp4">b</a><img src="https://evil.example/a.png" alt="">'), OFF);
 ntpFail("fail-quote-inside-a-tag-value-cannot-carry-the-scan-past-the-tag", site(`<p title="src='">${LINK_ITEM}<p title='x'>ok</p>`), HREF_NOT_A);
+// The attributes of a start tag are read from the tag, so a value that ends in a name from the list
+// (alt="x src=") cannot make the scan take its closing quote for an opening one and step over the
+// real attribute that follows. Each of these passed the check at one earlier commit or another.
+ntpFail("fail-alt-ending-in-src-does-not-hide-the-src", site('<img alt="x src=" src="https://evil.example/a.png">'), OFF);
+ntpFail("fail-placeholder-ending-in-data-does-not-hide-formaction", site('<form><input placeholder="?data=" formaction="https://evil.example/go"></form>'), OFF);
+ntpFail("fail-title-ending-in-data-does-not-hide-srcset", site('<img title="data=" srcset="https://evil.example/a.png 2x" src="a.png" alt="">'), OFF);
+ntpFail("fail-title-ending-in-src-does-not-hide-ping", site('<a href="/" title="Share as ?src=" ping="https://evil.example/p">x</a>'), OFF);
+ntpFail("fail-title-ending-in-data-does-not-hide-a-font-link", site("<p>ok</p>", { head: '<link rel="stylesheet" title="data=" href="https://fonts.example/css">\n' }), /URL on another origin: https:\/\/fonts\.example\/css \(an href may leave the site only on an <a>\)/);
+ntpFail("fail-duplicate-src-second-is-off-origin", site('<img src="a.png" src="https://evil.example/a.png" alt="">'), OFF);
+ntpFail("fail-valueless-attribute-before-src", site('<img ismap src="https://evil.example/a.png" alt="">'), OFF);
+ntpFail("fail-src-after-an-unquoted-value", site('<img alt=x src=https://evil.example/a.png>'), OFF);
+ntpFail("fail-meta-refresh-with-content-text-in-another-attribute", site("<p>ok</p>", { head: '<meta http-equiv="refresh" name="x content=5" content="0;url=https://evil.example/">\n' }), OFF);
+ntpPass("pass-a-href-and-alt-with-names-in-values", site('<a href="/x" title="src= data= href= ping=">x</a>'));
 // A browser decodes &quot; and &#39; in an attribute value, so a style attribute can hold them around a url().
 ntpFail("fail-style-attribute-url-in-quot-entities", site('<div style="background-image: url(&quot;https://evil.example/x.png&quot;);"></div>'), OFF);
 ntpFail("fail-style-attribute-url-in-numeric-apostrophe-entities", site("<div style=\"background-image: url(&#39;https://evil.example/x.png&#39;);\"></div>"), OFF);
@@ -348,6 +361,7 @@ lanPass("pass-landing-non-breaking-space-with-leading-zeros", "<p>Linkling is a 
 lanPass("pass-landing-is-being-tracked", "<p>Linkling is a link shortener. No one who clicks is being tracked.</p>");
 lanPass("pass-landing-nobody-is-tracked", "<p>Linkling is a link shortener. Nobody is tracked.</p>");
 lanPass("pass-landing-clicks-are-not-being-tracked", "<p>Linkling is a link shortener. Clicks are not being tracked.</p>");
+lanPass("pass-landing-you-are-not-tracked", "<p>Linkling is a link shortener. When you follow a short link, you are not tracked.</p>");
 
 // ---- R-021 failing: exit 1, and which statement is missing
 const NAMES = /landing: index\.html never names Linkling in its text/;
@@ -376,6 +390,13 @@ lanFail("fail-landing-opposite-promise-after-a-semicolon", "<h1>Linkling</h1><p>
 lanFail("fail-landing-opposite-promise-after-and", "<h1>Linkling</h1><p>A link shortener. Nobody who clicks needs an account and every click is tracked.</p>", CLAIM);
 lanFail("fail-landing-opposite-promise-after-but", "<h1>Linkling</h1><p>A link shortener. No one who clicks pays but everyone is tracked.</p>", CLAIM);
 lanFail("fail-landing-who-clause-is-not-about-clicking", "<h1>Linkling</h1><p>A link shortener. Nobody who cares is tracked less than the rest.</p>", CLAIM);
+// Not the promise: links are not the ones being tracked.
+lanFail("fail-landing-links-not-tracked-is-not-the-promise", "<h1>Linkling</h1><p>A link shortener. Expired links are not tracked. Every other click is logged with its IP address.</p>", CLAIM);
+// What a regex cannot tell from the promise, pinned so the header stays true: a qualifier or a second
+// sentence after "tracked", a negated wrapper, or a subject that is not the one who clicks.
+lanPass("gap-landing-qualifier-and-a-contradiction-after-tracked-passes", "<h1>Linkling</h1><p>A link shortener. Nobody is tracked by name, but every click is logged with its IP address and browser.</p>");
+lanPass("gap-landing-negated-wrapper-passes", "<h1>Linkling</h1><p>A link shortener. We can not promise that nobody is tracked.</p>");
+lanPass("gap-landing-subject-who-uses-the-dashboard-passes", "<h1>Linkling</h1><p>A link shortener. Nobody who uses the dashboard is tracked. Every click is logged with its IP address.</p>");
 // Text a visitor does not see as page copy.
 lanFail("fail-landing-promise-only-in-a-noscript", "<p>Linkling is a link shortener.</p><noscript>Nobody who clicks is tracked.</noscript>", CLAIM);
 lanFail("fail-landing-promise-only-in-a-template", "<p>Linkling is a link shortener.</p><template><p>Nobody who clicks is tracked.</p></template>", CLAIM);

@@ -174,15 +174,21 @@ function readCssUrl(text, i) {
 }
 
 // The attributes whose value the browser loads or submits to, and href, which is a load
-// everywhere except on <a>. A name that follows a word character or "-" (data-src) is a
-// different attribute, and xlink:href still matches. The value is read in a lookahead, so
-// a match ends at the "=". Where the match is outside every start tag the walk saw (prose,
-// a comment, a script, a stylesheet) the scan goes on inside the value, so a quote that
-// never closes (prose such as data=') cannot swallow the tags after it and hide their
-// attributes. Inside a start tag the value is opaque and the scan goes on after it, but not
-// past the end of the tag: an allowed link may carry ?src=https://... in its query.
-const URL_ATTR =
-  /(?<![\w-])(src|srcset|imagesrcset|poster|data|action|formaction|ping|attributionsrc|href)\s*=\s*(?=(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))/gi;
+// everywhere except on <a>. Two readers use the same names:
+//  - Inside a start tag the walk saw, offOrigin reads the tag's attributes one by one from the
+//    tag grammar (ATTR), so a value is opaque: an allowed link may carry ?src=https://... in
+//    its query, and an alt="x src=" cannot make the next real attribute look like a value.
+//  - Everywhere else (prose, a comment, a script, a stylesheet, whatever follows a parse
+//    problem) URL_ATTR scans the raw text. A name that follows a word character or "-"
+//    (data-src) is a different attribute, and xlink:href still matches. The value is read in
+//    a lookahead, so a match ends at the "=" and a quote that never closes (prose such as
+//    data=') cannot swallow the tags after it.
+const URL_NAMES = "src|srcset|imagesrcset|poster|data|action|formaction|ping|attributionsrc|href";
+const URL_ATTR = new RegExp(`(?<![\\w-])(${URL_NAMES})\\s*=\\s*(?=(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>\`]+)))`, "gi");
+// One attribute of a start tag START_TAG has matched: a name, and maybe a value.
+const ATTR = new RegExp(`([^${NOT_WS}"'<>/=]+)(?:${WS}*=${WS}*(?:"([^"]*)"|'([^']*)'|([^${NOT_WS}"'=<>\`]+)))?`, "g");
+// An attribute name that is one of URL_NAMES, with or without a namespace (xlink:href).
+const URL_NAME = new RegExp(`(?:^|:)(${URL_NAMES})$`);
 // These hold several URLs, separated by whitespace and commas.
 const URL_LIST = new Set(["srcset", "imagesrcset", "ping", "attributionsrc"]);
 // @import, spelled the way the CSS tokenizer reads a keyword: escapes decoded, any case.
@@ -212,10 +218,9 @@ function refreshTarget(content) {
   return /^\s*[\d.]*\s*[;,]?\s*(?:url\s*=\s*)?["']?\s*(.*)$/is.exec(content)?.[1] || null;
 }
 
-// `anchors` and `tags` are the [start, end) spans of the <a> start tags and of all start
-// tags, and `metas` the [start, text] of the <meta> start tags, that parseHtml saw at their
-// real place in the document; a .css file has none of them.
-function offOrigin(text, anchors = [], metas = [], tags = []) {
+// `tags` are the start tags parseHtml saw at their real place in the document, each
+// [start, end, name, attribute text, where the attribute text starts]; a .css file has none.
+function offOrigin(text, tags = []) {
   const found = [];
   const add = (index, raw, note = "") => {
     // Browsers strip leading C0 controls and spaces, drop tabs and newlines inside a URL,
@@ -225,28 +230,42 @@ function offOrigin(text, anchors = [], metas = [], tags = []) {
       found.push(`${lineOf(text, index)}: URL on another origin: ${value.slice(0, 200)}${note}`);
     }
   };
-  const attr = new RegExp(URL_ATTR.source, URL_ATTR.flags);
-  for (let m = attr.exec(text); m !== null; m = attr.exec(text)) {
-    const name = m[1].toLowerCase();
-    const value = m[2] ?? m[3] ?? m[4];
+  // One attribute: `name` is one of URL_NAMES; an href is allowed off the site on an <a> only.
+  const check = (name, value, index, onAnchor) => {
     if (name === "href") {
-      if (!spanAt(anchors, m.index)) add(m.index, value, " (an href may leave the site only on an <a>)");
+      if (!onAnchor) add(index, value, " (an href may leave the site only on an <a>)");
     } else if (URL_LIST.has(name)) {
-      for (const item of value.split(/[\s,]+/)) add(m.index, item);
+      for (const item of value.split(/[\s,]+/)) add(index, item);
     } else {
-      add(m.index, value);
+      add(index, value);
     }
-    const tag = spanAt(tags, m.index);
-    if (tag) {
-      const quotes = m[4] === undefined ? 2 : 0;
-      attr.lastIndex = Math.max(attr.lastIndex, Math.min(m.index + m[0].length + value.length + quotes, tag[1]));
-    }
+  };
+
+  // Outside every start tag the walk saw: the raw text.
+  const raw = new RegExp(URL_ATTR.source, URL_ATTR.flags);
+  for (let m = raw.exec(text); m !== null; m = raw.exec(text)) {
+    if (!spanAt(tags, m.index)) check(m[1].toLowerCase(), m[2] ?? m[3] ?? m[4], m.index, false);
   }
-  for (const [index, tag] of metas) {
-    if (!/[\s"']http-equiv\s*=\s*(?:"\s*refresh\s*"|'\s*refresh\s*'|refresh(?![^\s>\/]))/i.test(tag)) continue;
-    const c = /[\s"']content\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/i.exec(tag);
-    const target = c && refreshTarget(c[1] ?? c[2] ?? c[3]);
-    if (target) add(index + c.index, target);
+  // Inside them: the attributes of the tag.
+  for (const [, , name, attrs, attrsAt] of tags) {
+    let refresh = false;
+    const contents = [];
+    for (const a of attrs.matchAll(ATTR)) {
+      const value = a[2] ?? a[3] ?? a[4];
+      if (value === undefined) continue;
+      const attrName = a[1].toLowerCase();
+      const url = URL_NAME.exec(attrName)?.[1];
+      if (url) check(url, value, attrsAt + a.index, name === "a");
+      if (name === "meta" && attrName === "http-equiv" && value.trim().toLowerCase() === "refresh") refresh = true;
+      if (name === "meta" && attrName === "content") contents.push([attrsAt + a.index, value]);
+    }
+    // <meta http-equiv="refresh" content="5; url=..."> sends the browser there by itself.
+    if (refresh) {
+      for (const [index, content] of contents) {
+        const target = refreshTarget(content);
+        if (target) add(index, target);
+      }
+    }
   }
   for (const m of text.matchAll(URL_OPEN)) add(m.index, readCssUrl(text, m.index + m[0].length));
   for (const m of text.matchAll(IMPORT_OPEN)) add(m.index, readCssUrl(text, m.index + m[0].length));
@@ -254,10 +273,10 @@ function offOrigin(text, anchors = [], metas = [], tags = []) {
 }
 
 // Walks the document once: `problem` is a "line: message" string for the first parse
-// problem, or null; `anchors`, `metas` and `tags` are what offOrigin needs. A tag inside a
-// comment or a script is not at a real place in the document, so it is in none of them.
+// problem, or null; `tags` is what offOrigin needs. A tag inside a comment or a script is
+// not at a real place in the document, so it is not in it.
 function parseHtml(text) {
-  const out = { problem: null, anchors: [], metas: [], tags: [] };
+  const out = { problem: null, tags: [] };
   out.problem = walk(text, out);
   return out;
 }
@@ -308,9 +327,7 @@ function walk(text, out) {
       const name = m[1].toLowerCase();
       const start = i;
       i += m[0].length;
-      out.tags.push([start, i]);
-      if (name === "a") out.anchors.push([start, i]);
-      else if (name === "meta") out.metas.push([start, m[0]]);
+      out.tags.push([start, i, name, m[2], start + 1 + m[1].length]);
       // Inside inline SVG and MathML, "/>" closes an element (<path/>); in HTML it is ignored.
       if (VOID.has(name) || (m[3] === "/" && (isForeign(name) || foreign > 0))) continue;
       stack.push({ name, index: start });
@@ -361,7 +378,7 @@ function run(root) {
     const text = bytes.toString("utf8");
     const isHtml = /\.html$/i.test(file);
     const parsed = isHtml ? parseHtml(text) : undefined;
-    for (const p of offOrigin(text, parsed?.anchors, parsed?.metas, parsed?.tags)) problems.push(`${name}:${p}`);
+    for (const p of offOrigin(text, parsed?.tags)) problems.push(`${name}:${p}`);
     if (isHtml) {
       html += 1;
       if (parsed.problem) problems.push(`${name}:${parsed.problem}`);

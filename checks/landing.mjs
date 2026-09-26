@@ -43,8 +43,9 @@ const NOT_TRACKED = new RegExp(
     `\\b(?:nobody|no[ -]one)(?: who (?:clicks|opens|follows|visits|uses)(?:(?!${CLAUSE_BREAK} )[^.!?,;:]){0,60})? (?:is|gets|will be|is being) (?:ever )?tracked\\b`,
     // "tracks nobody"
     "\\btracks (?:nobody|no[ -]one)\\b",
-    // "clicks are not tracked": what is not tracked is the clicks, the visits or the visitors.
-    "\\b(?:clicks|visits|visitors|links)(?: [a-z]+)? (?:are|is)(?: not|n['’]t| never)(?: being)? tracked\\b",
+    // "clicks are not tracked", "you are not tracked": what is not tracked is the clicks, the
+    // visits, the visitors or the reader, not the links.
+    "\\b(?:clicks|visits|visitors|you)(?: [a-z]+)? (?:are|is)(?: not|n['’]t| never)(?: being)? tracked\\b",
   ].join("|"),
 );
 const STATEMENTS = [
