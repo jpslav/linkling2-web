@@ -1,12 +1,17 @@
 name: ci
 
-# Every pull request and every push to main. No path filters and no matrix: the
-# ruleset "require ci-required on main" waits for a check named exactly `ci-required`,
-# and a workflow that does not run leaves that check missing and the merge blocked.
+# Every pull request, every push to main, and once a day. No path filters and no
+# matrix: the ruleset "require ci-required on main" waits for a check named exactly
+# `ci-required`, and a workflow that does not run leaves that check missing and the merge
+# blocked. The daily run is for the privacy check (linkling-api ADR-0004): a change to
+# linkling-api's privacy-manifest.json changes nothing here, so without it the page could
+# fall behind until this repo's next pull request.
 on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    - cron: "17 6 * * *"
 
 permissions:
   contents: read
@@ -27,3 +32,10 @@ jobs:
       - run: sh checks/landing.sh
       # The two checks above, tried on fixtures that must pass, fail and go blind.
       - run: node checks/selftest.mjs
+      # R-022: the privacy page says what linkling-api's privacy-manifest.json says. On a
+      # pull request it reads linkling-api's branch of the same name first (ADR-0011).
+      - run: sh checks/privacy-matches-service.sh
+        env:
+          PRIVACY_MANIFEST_BRANCH: ${{ github.head_ref }}
+      # The privacy check, tried on fixtures that must pass, fail, warn and go blind.
+      - run: node checks/privacy-selftest.mjs

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy — Linkling</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<h1>Privacy</h1>
+
+<p>This page says what the Linkling service stores and for how long. The service is the program a team runs for itself to make short links and to send people on from them; each team runs its own copy. Other software a team puts in front of the service, such as a proxy, and the web host that serves this site can keep logs of their own, including your address. Whoever runs them decides that, and this page cannot speak for them.</p>
+
+<h2>If you open a short link</h2>
+
+<p>The service stores and logs nothing about you: not your address, your browser, the page you came from or where you are. Opening a link adds one to that link's count for the day, and that is all.</p>
+
+<p>The site a short link sends you to is not part of Linkling. It sees your visit as it would any other, except that Linkling does not tell it which page you came from.</p>
+
+<p data-manifest="counted">A link's count for the day goes up by one each time someone opening it is sent on to its target. Opening a link that does not exist or has expired adds nothing, and neither does a request that asks only about the link without opening it; most tools that check links open them fully, and those count. Chat apps and other programs often open a pasted link by themselves, to show a preview or to check that it is safe, and those count too: telling them apart from people would mean reading something about each visitor, which Linkling does not do.</p>
+
+<p data-manifest="logged">The service writes no access log, and handling a request writes nothing about it to any log.</p>
+
+<h2>Everything the service stores</h2>
+
+<table>
+<thead>
+<tr><th scope="col">What is stored</th><th scope="col">How long it is kept</th></tr>
+</thead>
+<tbody>
+<tr data-stored="link-name"><td>A link's short name</td><td>Until the link is deleted</td></tr>
+<tr data-stored="link-target"><td>The address the link sends people to</td><td>Until the link is deleted</td></tr>
+<tr data-stored="link-maker"><td>The maker's name, as they gave it (often their computer login name)</td><td>Until the link is deleted</td></tr>
+<tr data-stored="link-created"><td>When the link was made</td><td>Until the link is deleted</td></tr>
+<tr data-stored="link-expiry"><td>When the link stops working, if its maker gave it an end</td><td>Until the link is deleted</td></tr>
+<tr data-stored="link-number"><td>An internal number for the link</td><td>Until the link is deleted; its daily counts keep the number after that</td></tr>
+<tr data-stored="daily-counts"><td>For each link and each calendar day (in UTC, the same clock for everyone), how many times the link was followed that day</td><td>Forever, even after the link is deleted. A deleted link's counts stay under its internal number, tied to no name, and are shown nowhere</td></tr>
+<tr data-stored="highest-number"><td>The highest internal link number handed out so far, so that no number is used twice</td><td>Forever</td></tr>
+</tbody>
+</table>
+
+<p>That is the whole list. Besides it, the database holds only its own layout and a note of which version of that layout is in use. The service sets no cookies.</p>
+
+<h2>This site</h2>
+
+<p>The pages of this site have no scripts, set no cookies and load nothing from any other site.</p>
+
+<p><a href="index.html">Linkling</a></p>
+</main>
+</body>
+</html>
