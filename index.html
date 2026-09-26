@@ -3,10 +3,24 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Linkling</title>
+<title>Linkling: a link shortener that tracks nobody who clicks</title>
+<meta name="description" content="Linkling is a small link shortener a team runs for itself. Nobody who clicks a short link is tracked beyond a daily count.">
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
+<main>
 <h1>Linkling</h1>
-<p>Placeholder page. The public site is not built yet.</p>
+<p class="lead">A small link shortener a team runs for itself. Nobody who clicks a short link is tracked beyond a daily count.</p>
+
+<h2>What it is</h2>
+<p>Linkling turns a long URL into a short one, like <code>links.example.team/q3-plan</code>. Your team runs it itself, with one <code>docker compose up</code>. The team shares one key, and nobody needs an account of their own.</p>
+<p>Someone on the team makes a short link from a command-line tool or the API, under a name they choose or a made-up one that is easy to read aloud. A link can expire, or last forever, and it can be deleted. The team sees how many times each link was followed, day by day, on a stats page and from the command line.</p>
+
+<h2>What happens when someone clicks</h2>
+<p>They go straight to the long URL, and nothing is asked of them: no key, no account, no login. The only thing recorded about the click is one more in that link's count for that day. Linkling does not store an IP address, a browser, a referrer or a location.</p>
+
+<h2>About this site</h2>
+<p>This page loads nothing from any other site: no fonts, scripts, analytics or images from elsewhere. The <a href="privacy.html">privacy page</a> says exactly what Linkling stores and for how long. The <a href="https://github.com/jpslav/linkling2-api">source code</a> is on GitHub.</p>
+</main>
 </body>
 </html>

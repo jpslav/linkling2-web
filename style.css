@@ -1,0 +1,38 @@
+/* The one stylesheet (ADR-0007). System fonts only, and nothing loaded from another
+   origin (ADR-0008). The browser picks light or dark from the reader's settings. */
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  margin: 0;
+  font: 1.0625rem/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+main {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 2rem 1rem 4rem;
+}
+
+h1 {
+  font-size: 2.25rem;
+  margin: 0 0 0.5rem;
+}
+
+h2 {
+  font-size: 1.25rem;
+  margin: 2rem 0 0.5rem;
+}
+
+.lead {
+  font-size: 1.25rem;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.95em;
+  padding: 0.1em 0.3em;
+  border-radius: 0.25rem;
+  background: rgba(127, 127, 127, 0.15);
+}
