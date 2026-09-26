@@ -242,6 +242,19 @@ ntpFail("fail-attributionsrc", site('<img src="a.png" attributionsrc="https://ev
 ntpFail("fail-attributionsrc-second-url", site('<a href="x.html" attributionsrc="/r https://evil.example/r">x</a>'), OFF);
 ntpFail("fail-css-import-escaped-keyword", site('<style>@\\69mport "https://evil.example/x.css";</style>'), OFF);
 ntpFail("fail-css-import-uppercase-keyword", cssSite('@IMPORT "https://evil.example/x.css";'), OFF);
+// A value inside a start tag is opaque: an allowed link, or a same-origin URL, may carry an
+// absolute URL in its query. The scan goes on after the value, but never past the tag's end.
+ntpPass("pass-a-href-query-carries-a-src-url", site('<a href="https://a.example/embed?src=https://b.example/v.mp4">b</a>'));
+ntpPass("pass-a-href-query-carries-a-data-url", site('<a href="https://a.example/x?data=https://b.example/d.json">b</a>'));
+ntpPass("pass-a-href-query-carries-an-action-url", site('<a href="https://a.example/x?action=https://b.example/go">b</a>'));
+ntpPass("pass-relative-src-query-carries-an-absolute-url", site('<img src="/proxy?src=https://b.example/x.png" alt="">'));
+ntpFail("fail-real-src-after-an-a-with-a-src-query", site('<a href="https://a.example/e?src=https://b.example/v.mp4">b</a><img src="https://evil.example/a.png" alt="">'), OFF);
+ntpFail("fail-quote-inside-a-tag-value-cannot-carry-the-scan-past-the-tag", site(`<p title="src='">${LINK_ITEM}<p title='x'>ok</p>`), HREF_NOT_A);
+// A browser decodes &quot; and &#39; in an attribute value, so a style attribute can hold them around a url().
+ntpFail("fail-style-attribute-url-in-quot-entities", site('<div style="background-image: url(&quot;https://evil.example/x.png&quot;);"></div>'), OFF);
+ntpFail("fail-style-attribute-url-in-numeric-apostrophe-entities", site("<div style=\"background-image: url(&#39;https://evil.example/x.png&#39;);\"></div>"), OFF);
+ntpFail("fail-style-attribute-url-in-hex-quote-entities", site('<div style="background-image: url(&#x22;https://evil.example/x.png&#x22;);"></div>'), OFF);
+ntpPass("pass-style-attribute-relative-url-in-quot-entities", site('<div style="background-image: url(&quot;bg.png&quot;);"></div>'));
 // What the header still says it does not cover, pinned like the other gaps.
 ntpPass("gap-css-import-with-a-comment-passes", cssSite('@import/**/"https://evil.example/x.css";'));
 ntpPass("gap-meta-refresh-entity-encoded-passes", site("<p>ok</p>", { head: '<meta http-equiv="&#114;efresh" content="0;url=https://evil.example/">\n' }));
@@ -331,6 +344,10 @@ lanPass("pass-landing-arent-tracked", "<p>Linkling is a link shortener. Clicks a
 lanPass("pass-landing-gets-tracked", "<p>Linkling is a link shortener. No one who clicks a short link gets tracked.</p>");
 lanPass("pass-landing-ever-tracked", "<p>Linkling is a link shortener. Nobody is ever tracked.</p>");
 lanPass("pass-landing-non-breaking-spaces", "<p>Linkling is a link&nbsp;shortener. Nobody who clicks&nbsp;is tracked.</p>");
+lanPass("pass-landing-non-breaking-space-with-leading-zeros", "<p>Linkling is a link&#x00A0;shortener. Nobody who clicks&#0160;is tracked.</p>");
+lanPass("pass-landing-is-being-tracked", "<p>Linkling is a link shortener. No one who clicks is being tracked.</p>");
+lanPass("pass-landing-nobody-is-tracked", "<p>Linkling is a link shortener. Nobody is tracked.</p>");
+lanPass("pass-landing-clicks-are-not-being-tracked", "<p>Linkling is a link shortener. Clicks are not being tracked.</p>");
 
 // ---- R-021 failing: exit 1, and which statement is missing
 const NAMES = /landing: index\.html never names Linkling in its text/;
@@ -353,6 +370,12 @@ lanFail("fail-landing-nobody-and-tracked-in-different-sentences", "<p>Linkling i
 lanFail("fail-landing-nobody-likes-being-tracked", "<p>Linkling is a link shortener with a stats page that shows who clicked each link.</p><p>Nobody likes being tracked, so we keep those stats private to your team.</p>", CLAIM);
 lanFail("fail-landing-nobody-wants-to-be-tracked", "<p>Linkling is a link shortener. Nobody wants to be tracked, but every click is.</p>", CLAIM);
 lanFail("fail-landing-whether-or-not-tracked", "<p>Linkling is a link shortener. Whether or not tracked by us, every click is logged by the host.</p>", CLAIM);
+// The words of the promise, followed by a second clause that promises the opposite.
+lanFail("fail-landing-opposite-promise-after-a-comma", "<h1>Linkling</h1><p>A link shortener. Nobody who clicks needs an account, and every click is tracked with IP and browser.</p>", CLAIM);
+lanFail("fail-landing-opposite-promise-after-a-semicolon", "<h1>Linkling</h1><p>A link shortener. Nobody who clicks is asked to sign in; every click is tracked.</p>", CLAIM);
+lanFail("fail-landing-opposite-promise-after-and", "<h1>Linkling</h1><p>A link shortener. Nobody who clicks needs an account and every click is tracked.</p>", CLAIM);
+lanFail("fail-landing-opposite-promise-after-but", "<h1>Linkling</h1><p>A link shortener. No one who clicks pays but everyone is tracked.</p>", CLAIM);
+lanFail("fail-landing-who-clause-is-not-about-clicking", "<h1>Linkling</h1><p>A link shortener. Nobody who cares is tracked less than the rest.</p>", CLAIM);
 // Text a visitor does not see as page copy.
 lanFail("fail-landing-promise-only-in-a-noscript", "<p>Linkling is a link shortener.</p><noscript>Nobody who clicks is tracked.</noscript>", CLAIM);
 lanFail("fail-landing-promise-only-in-a-template", "<p>Linkling is a link shortener.</p><template><p>Nobody who clicks is tracked.</p></template>", CLAIM);
@@ -444,7 +467,11 @@ function main() {
       if (r.error) problems.push(`timed out after ${TIMEOUT_MS} ms`);
       else if (r.status !== c.exit) problems.push(`exit ${r.status}, wanted ${c.exit}`);
       if (!r.error && !c.out.test(output)) problems.push(`output does not match ${c.out}`);
-      if (!r.error && c.quiet && (r.stderr ?? "") !== "") problems.push("wrote to stderr on a passing run");
+      // The entry points merge the engine's stderr into what they print, so a warning shows
+      // up as a second line: a passing run says exactly one thing, on stdout.
+      if (!r.error && c.quiet && ((r.stderr ?? "") !== "" || (r.stdout ?? "").split("\n").filter(Boolean).length !== 1)) {
+        problems.push("a passing run must print exactly one line, and nothing on stderr");
+      }
       if (problems.length > 0) {
         mismatches.push(c.name);
         console.log(`MISMATCH ${c.name}: ${problems.join("; ")}`);

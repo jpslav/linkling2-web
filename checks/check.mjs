@@ -176,8 +176,11 @@ function readCssUrl(text, i) {
 // The attributes whose value the browser loads or submits to, and href, which is a load
 // everywhere except on <a>. A name that follows a word character or "-" (data-src) is a
 // different attribute, and xlink:href still matches. The value is read in a lookahead, so
-// a match ends at the "=" and the scan goes on inside the value: a quote that never closes
-// (prose such as data=') cannot swallow the tags after it and hide their attributes.
+// a match ends at the "=". Where the match is outside every start tag the walk saw (prose,
+// a comment, a script, a stylesheet) the scan goes on inside the value, so a quote that
+// never closes (prose such as data=') cannot swallow the tags after it and hide their
+// attributes. Inside a start tag the value is opaque and the scan goes on after it, but not
+// past the end of the tag: an allowed link may carry ?src=https://... in its query.
 const URL_ATTR =
   /(?<![\w-])(src|srcset|imagesrcset|poster|data|action|formaction|ping|attributionsrc|href)\s*=\s*(?=(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))/gi;
 // These hold several URLs, separated by whitespace and commas.
@@ -185,18 +188,23 @@ const URL_LIST = new Set(["srcset", "imagesrcset", "ping", "attributionsrc"]);
 // @import, spelled the way the CSS tokenizer reads a keyword: escapes decoded, any case.
 const IMPORT_OPEN = new RegExp("@" + [..."import"].map(cssLetter).join(""), "gi");
 
-// Does the sorted list of disjoint [start, end) spans contain index?
-function inSpans(spans, index) {
+// The span of the sorted list of disjoint [start, end) spans that contains index, or undefined.
+function spanAt(spans, index) {
   let lo = 0;
   let hi = spans.length - 1;
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;
     if (index < spans[mid][0]) hi = mid - 1;
     else if (index >= spans[mid][1]) lo = mid + 1;
-    else return true;
+    else return spans[mid];
   }
-  return false;
+  return undefined;
 }
+
+// A browser decodes &quot; and &#39; in an attribute value, so a style attribute can carry
+// url(&quot;https://...&quot;). Only the character reference at the front of a URL is undone:
+// full decoding of attribute values is not attempted.
+const QUOTE_ENTITY = /^(?:&(?:quot|apos);?|&#0*(?:34|39);?|&#x0*(?:22|27);?)/i;
 
 // Where a <meta http-equiv="refresh"> content value sends the browser: what follows the
 // delay, its separator, an optional url= and an optional quote. Null when it has no URL.
@@ -204,28 +212,34 @@ function refreshTarget(content) {
   return /^\s*[\d.]*\s*[;,]?\s*(?:url\s*=\s*)?["']?\s*(.*)$/is.exec(content)?.[1] || null;
 }
 
-// `anchors` are the [start, end) spans of the <a> start tags and `metas` the [start, text]
-// of the <meta> start tags that parseHtml saw at their real place in the document; a .css
-// file has neither.
-function offOrigin(text, anchors = [], metas = []) {
+// `anchors` and `tags` are the [start, end) spans of the <a> start tags and of all start
+// tags, and `metas` the [start, text] of the <meta> start tags, that parseHtml saw at their
+// real place in the document; a .css file has none of them.
+function offOrigin(text, anchors = [], metas = [], tags = []) {
   const found = [];
   const add = (index, raw, note = "") => {
     // Browsers strip leading C0 controls and spaces, drop tabs and newlines inside a URL,
     // and read a backslash as a slash in http(s) URLs.
-    const value = raw.replace(/^[\u0000- ]+/, "").replace(/[\t\n\r]/g, "").replace(/\\/g, "/");
+    const value = raw.replace(QUOTE_ENTITY, "").replace(/^[\u0000- ]+/, "").replace(/[\t\n\r]/g, "").replace(/\\/g, "/");
     if (/^(?:https?:|\/\/)/i.test(value)) {
       found.push(`${lineOf(text, index)}: URL on another origin: ${value.slice(0, 200)}${note}`);
     }
   };
-  for (const m of text.matchAll(URL_ATTR)) {
+  const attr = new RegExp(URL_ATTR.source, URL_ATTR.flags);
+  for (let m = attr.exec(text); m !== null; m = attr.exec(text)) {
     const name = m[1].toLowerCase();
     const value = m[2] ?? m[3] ?? m[4];
     if (name === "href") {
-      if (!inSpans(anchors, m.index)) add(m.index, value, " (an href may leave the site only on an <a>)");
+      if (!spanAt(anchors, m.index)) add(m.index, value, " (an href may leave the site only on an <a>)");
     } else if (URL_LIST.has(name)) {
       for (const item of value.split(/[\s,]+/)) add(m.index, item);
     } else {
       add(m.index, value);
+    }
+    const tag = spanAt(tags, m.index);
+    if (tag) {
+      const quotes = m[4] === undefined ? 2 : 0;
+      attr.lastIndex = Math.max(attr.lastIndex, Math.min(m.index + m[0].length + value.length + quotes, tag[1]));
     }
   }
   for (const [index, tag] of metas) {
@@ -240,10 +254,10 @@ function offOrigin(text, anchors = [], metas = []) {
 }
 
 // Walks the document once: `problem` is a "line: message" string for the first parse
-// problem, or null; `anchors` and `metas` are what offOrigin needs. A tag inside a
-// comment or a script is not at a real place in the document, so it is in neither.
+// problem, or null; `anchors`, `metas` and `tags` are what offOrigin needs. A tag inside a
+// comment or a script is not at a real place in the document, so it is in none of them.
 function parseHtml(text) {
-  const out = { problem: null, anchors: [], metas: [] };
+  const out = { problem: null, anchors: [], metas: [], tags: [] };
   out.problem = walk(text, out);
   return out;
 }
@@ -294,6 +308,7 @@ function walk(text, out) {
       const name = m[1].toLowerCase();
       const start = i;
       i += m[0].length;
+      out.tags.push([start, i]);
       if (name === "a") out.anchors.push([start, i]);
       else if (name === "meta") out.metas.push([start, m[0]]);
       // Inside inline SVG and MathML, "/>" closes an element (<path/>); in HTML it is ignored.
@@ -346,7 +361,7 @@ function run(root) {
     const text = bytes.toString("utf8");
     const isHtml = /\.html$/i.test(file);
     const parsed = isHtml ? parseHtml(text) : undefined;
-    for (const p of offOrigin(text, parsed?.anchors, parsed?.metas)) problems.push(`${name}:${p}`);
+    for (const p of offOrigin(text, parsed?.anchors, parsed?.metas, parsed?.tags)) problems.push(`${name}:${p}`);
     if (isHtml) {
       html += 1;
       if (parsed.problem) problems.push(`${name}:${parsed.problem}`);

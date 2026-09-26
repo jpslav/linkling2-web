@@ -30,14 +30,29 @@ import { fileURLToPath } from "node:url";
 
 class Blind extends Error {}
 
+// Words that start a second clause. Inside "nobody who clicks ..." they end the clause about
+// who clicks, so "nobody who clicks needs an account and every click is tracked" is not a promise.
+const CLAUSE_BREAK = "(?: and| but| or| yet| so| while| though| although| because)";
+// The three shapes of the promise, each strict about who is not tracked. A sentence that uses
+// the words and promises the opposite, or nothing ("Nobody likes being tracked", "whether or
+// not tracked", "nobody who clicks needs an account, and every click is tracked"), is none of them.
+const NOT_TRACKED = new RegExp(
+  [
+    // "nobody is tracked", "no one who clicks a short link is tracked": the one tracked is the
+    // subject, and the clause about who clicks has no punctuation and no conjunction in it.
+    `\\b(?:nobody|no[ -]one)(?: who (?:clicks|opens|follows|visits|uses)(?:(?!${CLAUSE_BREAK} )[^.!?,;:]){0,60})? (?:is|gets|will be|is being) (?:ever )?tracked\\b`,
+    // "tracks nobody"
+    "\\btracks (?:nobody|no[ -]one)\\b",
+    // "clicks are not tracked": what is not tracked is the clicks, the visits or the visitors.
+    "\\b(?:clicks|visits|visitors|links)(?: [a-z]+)? (?:are|is)(?: not|n['’]t| never)(?: being)? tracked\\b",
+  ].join("|"),
+);
 const STATEMENTS = [
   ["index.html never names Linkling in its text", /\blinkling\b/],
   ['index.html never says what Linkling is (looked for "link shortener")', /\blink[ -]shortener\b/],
   [
-    'index.html never says clicks are not tracked (looked for "nobody who clicks ... is tracked", "tracks nobody" or "not tracked")',
-    // The one tracked is the one who clicks: "nobody (who clicks ...) is tracked", "tracks nobody",
-    // "are not tracked". "Nobody likes being tracked" and "whether or not tracked" are not it.
-    /\b(?:nobody|no[ -]one)\b(?: who [^.!?]*)? (?:is|gets|will be) (?:ever )?tracked\b|\btracks (?:nobody|no[ -]one)\b|\b(?:are|is|be|being|were)(?: not|n['’]t| never) tracked\b/,
+    'index.html never says clicks are not tracked (looked for "nobody who clicks ... is tracked", "tracks nobody" or "clicks are not tracked")',
+    NOT_TRACKED,
   ],
 ];
 // Elements whose content is not page copy: the parser reads it as raw text, or the browser
@@ -91,7 +106,7 @@ function visibleText(html) {
       i = gt === -1 ? html.length : gt + 1;
     }
   }
-  return out.replace(/&nbsp;|&#160;|&#xa0;/gi, " ").replace(/\s+/g, " ").toLowerCase();
+  return out.replace(/&nbsp;|&#0*160;|&#x0*a0;/gi, " ").replace(/\s+/g, " ").toLowerCase();
 }
 
 function run(root) {
