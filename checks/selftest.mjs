@@ -99,7 +99,10 @@ ntpPass("pass-a-href-and-relative-mix", site('<a href="privacy.html">p</a> <a hr
 ntpPass("pass-data-attribute-lookalikes", site('<div data-src="https://example.com/x" data-action="https://example.com/y" x-href="https://example.com/z" my-ping="https://example.com/w"></div>'));
 ntpPass("pass-optional-end-tags", site("<ul><li>one<li>two</ul><p>para<p>para two"));
 ntpPass("pass-void-tags", site('<br><hr><input disabled/><img src="a.png" alt="">'));
-ntpPass("pass-script-with-tag-text", site('<script>var s = "</p><div>"; if (1 < 2) {}</script>'));
+// Raw-text elements hold tag-like text without a parse problem (a <script> is not among the clean
+// ones any more: the site runs none).
+ntpPass("pass-style-with-tag-text", site("<style>/* </p><div> */ a > b { color: red }</style>"));
+ntpPass("pass-textarea-with-tag-text", site("<textarea></p><div> if (1 < 2) {}</textarea>"));
 ntpPass("pass-comment-with-tags", site('<!-- <div> not closed, <a href="x"> -->'));
 ntpPass("pass-lt-in-text", site("<p>a < b and 3 <4</p>"));
 ntpPass("pass-gt-in-attribute", site('<p title="a>b">x</p>'));
@@ -129,8 +132,32 @@ ntpPass("pass-page-in-subdirectory", site("<p>ok</p>", { extra: { "docs/about.ht
 ntpPass("gap-svg-breakout-div-passes", site("<svg><div/></svg>"));
 ntpPass("gap-css-image-set-string-passes", cssSite('a{background:image-set("https://evil.example/a.png" 1x)}'));
 ntpPass("gap-entity-encoded-src-passes", site('<img src="h&#116;tps://evil.example/a.png" alt="">'));
-ntpPass("gap-script-fetch-passes", site('<script>fetch("https://evil.example/")</script>'));
 ntpPass("gap-javascript-url-passes", site('<a href="javascript:void(0)">x</a>'));
+// No scripts (the privacy page says so): no <script> element and no on...= event-handler attribute.
+const NO_SCRIPT = /index\.html:\d+: <script> element: the site runs no scripts/;
+const NO_HANDLER = (name, tag) => new RegExp(`index\\.html:\\d+: ${name} event handler on <${tag}>: the site runs no scripts`);
+ntpPass("pass-words-that-look-like-scripts", site('<p>a script, the &lt;script&gt; tag and an onclick="x()" example</p><a href="/scripts/app.js">x</a><div data-script="x" data-onclick="y"></div><noscript>ok</noscript>'));
+ntpPass("pass-an-element-named-like-a-script", site("<scripted-widget>ok</scripted-widget>"));
+ntpPass("pass-script-in-a-comment", site("<!-- <script>alert(1)</script> -->"));
+ntpPass("pass-script-in-a-textarea", site("<textarea><script>alert(1)</script></textarea>"));
+ntpPass("pass-handler-look-alikes-in-values-and-names", site('<p data-onclick="x" title="onclick=x" class="onload" aria-onclick="y" id="onerror">ok</p>'));
+ntpFail("fail-script-element", site("<script>var a = 1;</script>"), NO_SCRIPT);
+ntpFail("fail-script-element-that-fetches", site('<script>fetch("https://evil.example/")</script>'), NO_SCRIPT);
+ntpFail("fail-script-element-with-a-same-origin-src", site('<script src="app.js"></script>'), NO_SCRIPT);
+ntpFail("fail-script-element-uppercase", site("<SCRIPT>x</SCRIPT>"), NO_SCRIPT);
+ntpFail("fail-script-element-json", site('<script type="application/ld+json">{}</script>'), NO_SCRIPT);
+ntpFail("fail-script-element-in-the-head", site("<p>ok</p>", { head: "<script>var a = 1;</script>\n" }), NO_SCRIPT);
+ntpFail("fail-script-element-in-svg", site("<svg><script>x</script></svg>"), NO_SCRIPT);
+ntpFail("fail-script-element-with-tag-text", site('<script>var s = "</p><div>"; if (1 < 2) {}</script>'), NO_SCRIPT);
+ntpFail("fail-script-element-in-a-second-page", site("<p>ok</p>", { extra: { "docs/about.html": page("<script>x</script>") } }), /docs\/about\.html:\d+: <script> element/);
+ntpFail("fail-onclick-attribute", site('<a href="/x" onclick="go()">x</a>'), NO_HANDLER("onclick", "a"));
+ntpFail("fail-onerror-attribute-on-an-img", site('<img src="a.png" alt="" onerror="x()">'), NO_HANDLER("onerror", "img"));
+ntpFail("fail-onload-attribute-on-svg", site('<svg onload="x()"></svg>'), NO_HANDLER("onload", "svg"));
+ntpFail("fail-handler-attribute-uppercase", site('<p ONCLICK="x()">x</p>'), NO_HANDLER("onclick", "p"));
+ntpFail("fail-handler-attribute-unquoted", site("<button onclick=go()>x</button>"), NO_HANDLER("onclick", "button"));
+ntpFail("fail-handler-attribute-single-quoted", site("<a href=\"/x\" onmouseover='x()'>x</a>"), NO_HANDLER("onmouseover", "a"));
+ntpFail("fail-handler-attribute-without-a-value", site("<p onclick>x</p>"), NO_HANDLER("onclick", "p"));
+ntpFail("fail-handler-attribute-after-other-attributes", site('<img alt="a>b" src="a.png" onload="x()">'), NO_HANDLER("onload", "img"));
 
 // ---- R-023 failing: exit 1, and why. Each is site() plus one edit.
 ntpFail("fail-img-src-https", site('<img src="https://evil.example/a.png" alt="">'), OFF);
@@ -262,7 +289,8 @@ ntpFail("fail-duplicate-src-second-is-off-origin", site('<img src="a.png" src="h
 ntpFail("fail-valueless-attribute-before-src", site('<img ismap src="https://evil.example/a.png" alt="">'), OFF);
 ntpFail("fail-src-after-an-unquoted-value", site('<img alt=x src=https://evil.example/a.png>'), OFF);
 ntpFail("fail-meta-refresh-with-content-text-in-another-attribute", site("<p>ok</p>", { head: '<meta http-equiv="refresh" name="x content=5" content="0;url=https://evil.example/">\n' }), OFF);
-ntpPass("pass-a-href-and-alt-with-names-in-values", site('<a href="/x" title="src= data= href= ping=">x</a>'));
+// A value is opaque: absolute URLs after the names inside a value are not attributes.
+ntpPass("pass-names-and-absolute-urls-inside-a-value", site('<a href="/x" title="see src=https://b.example/x and href=https://b.example/y">x</a>'));
 // A browser decodes &quot; and &#39; in an attribute value, so a style attribute can hold them around a url().
 ntpFail("fail-style-attribute-url-in-quot-entities", site('<div style="background-image: url(&quot;https://evil.example/x.png&quot;);"></div>'), OFF);
 ntpFail("fail-style-attribute-url-in-numeric-apostrophe-entities", site("<div style=\"background-image: url(&#39;https://evil.example/x.png&#39;);\"></div>"), OFF);
@@ -396,6 +424,7 @@ lanFail("fail-landing-links-not-tracked-is-not-the-promise", "<h1>Linkling</h1><
 // sentence after "tracked", a negated wrapper, or a subject that is not the one who clicks.
 lanPass("gap-landing-qualifier-and-a-contradiction-after-tracked-passes", "<h1>Linkling</h1><p>A link shortener. Nobody is tracked by name, but every click is logged with its IP address and browser.</p>");
 lanPass("gap-landing-negated-wrapper-passes", "<h1>Linkling</h1><p>A link shortener. We can not promise that nobody is tracked.</p>");
+lanPass("gap-landing-you-clause-with-a-contradiction-after-a-semicolon-passes", "<h1>Linkling</h1><p>A link shortener. If you opt out, you are not tracked; otherwise every click is logged with its IP address.</p>");
 lanPass("gap-landing-subject-who-uses-the-dashboard-passes", "<h1>Linkling</h1><p>A link shortener. Nobody who uses the dashboard is tracked. Every click is logged with its IP address.</p>");
 // Text a visitor does not see as page copy.
 lanFail("fail-landing-promise-only-in-a-noscript", "<p>Linkling is a link shortener.</p><noscript>Nobody who clicks is tracked.</noscript>", CLAIM);

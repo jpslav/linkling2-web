@@ -247,13 +247,19 @@ function offOrigin(text, tags = []) {
     if (!spanAt(tags, m.index)) check(m[1].toLowerCase(), m[2] ?? m[3] ?? m[4], m.index, false);
   }
   // Inside them: the attributes of the tag.
-  for (const [, , name, attrs, attrsAt] of tags) {
+  for (const [start, , name, attrs, attrsAt] of tags) {
+    // The privacy page promises the pages have no scripts: no <script> element, and no
+    // on...= event-handler attribute (no HTML attribute starts with "on" and is not one).
+    if (name === "script") found.push(`${lineOf(text, start)}: <script> element: the site runs no scripts`);
     let refresh = false;
     const contents = [];
     for (const a of attrs.matchAll(ATTR)) {
+      const attrName = a[1].toLowerCase();
+      if (/^on[a-z]/.test(attrName)) {
+        found.push(`${lineOf(text, attrsAt + a.index)}: ${attrName} event handler on <${name}>: the site runs no scripts`);
+      }
       const value = a[2] ?? a[3] ?? a[4];
       if (value === undefined) continue;
-      const attrName = a[1].toLowerCase();
       const url = URL_NAME.exec(attrName)?.[1];
       if (url) check(url, value, attrsAt + a.index, name === "a");
       if (name === "meta" && attrName === "http-equiv" && value.trim().toLowerCase() === "refresh") refresh = true;
