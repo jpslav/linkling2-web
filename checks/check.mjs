@@ -1,35 +1,63 @@
 #!/usr/bin/env node
-// The seed of the public site's CI check. Dependency-free on purpose: the site has no
-// build step and no package manager (linkling-api docs/adr/0007-repo-layout.md). The
-// full check is `checks/no-third-party.sh`, named in linkling-api
-// docs/adr/0008-third-party-services.md and not written yet.
+// The engine of the public site's CI check for R-023: the site loads nothing from any
+// other origin. Dependency-free on purpose: the site has no build step and no package
+// manager (linkling-api docs/adr/0007-repo-layout.md). Run it through its entry point,
+// `checks/no-third-party.sh`, the name linkling-api docs/adr/0008-third-party-services.md
+// gives: the script turns "node or this file is missing" into exit 2 instead of a shell
+// error. `node checks/check.mjs [site-root]` is the same check without that guard.
 //
-//   node checks/check.mjs [site-root]      (default: the repo root)
+//   sh checks/no-third-party.sh [site-root]      (default: the repo root)
 //
-// Exit 1 (something is wrong) when
+// It is a tripwire for accidents (a pasted font @import, an analytics snippet, a
+// mailing-list form), not a defence against an author trying to hide a load.
+//
+// Exit 0, and `no-third-party: PASS, N html and M css file(s) read under ROOT`, when
+// nothing below is wrong.
+//
+// Exit 1, one `file:line: problem` line each and then `no-third-party: FAIL, ...`, when
+//   - the text of an .html or .css file holds one of the attributes src, srcset,
+//     imagesrcset, poster, data, action, formaction, ping or href, followed by a value
+//     that starts with http: or https: (with or without the //) or is protocol-relative
+//     (//host). For srcset, imagesrcset and ping every whitespace or comma separated
+//     item counts. The site's own origin is not known yet, so every absolute URL counts as
+//     another origin (ADR-0008: the site loads nothing from any other origin);
+//   - that attribute is href and it is not an attribute of an <a> start tag. Outbound
+//     <a href> links are allowed (products/linkling/DECISIONS.md, 2026-09-26, "May the
+//     public site link out to other sites?"): a link loads nothing and tells nobody
+//     anything until someone follows it. The href of a <link>, <base>, <area>, <use> or
+//     <image> is a load or changes where other URLs point, so it counts;
+//   - a url(...) or an @import "..." string in CSS (in a .css file, a <style> element or
+//     a style attribute) has a value of that shape, or the target of a
+//     <meta http-equiv="refresh"> has;
 //   - an .html file is not well-formed enough to parse: an unterminated comment, tag,
 //     <script>, <style>, <textarea> or <title>; a start tag that does not fit the tag
 //     grammar; a stray end tag; or an element left open (elements whose end tag HTML
 //     lets you omit, such as p, li and td, are excepted). One parse problem per file,
-//     the first, since everything after it is parsed from an unreliable state;
-//   - the text of an .html or .css file holds src= or href= followed by a value, or a
-//     url(...), whose value starts with http: or https: (with or without the //) or is
-//     protocol-relative (//host). The site's own origin is not known yet, so every
-//     absolute URL counts as another origin (ADR-0008: the site loads nothing from any
-//     other origin). The scan reads raw text, so a match in a comment, a script or
-//     prose counts, and so does an outbound <a href> or a canonical link;
+//     the first, since everything after it is parsed from an unreliable state. The parse
+//     walk is also what finds the <a> tags above, so an href after a parse problem is not
+//     recognised as an <a> href and counts;
 //   - a symlink sits in the tree: it would be skipped, and skipped means unchecked.
-// Exit 2 (could not look) when the root or a file cannot be read, a file is not UTF-8
-// text (NUL bytes, or a UTF-16 byte order mark), or there is no index.html at the
-// root: zero pages checked is "never looked", not "all fine".
+// The scan reads raw text, so a match in a comment, a script or prose counts, and so does
+// a canonical link. The one exemption is an href inside an <a> start tag that the parse
+// walk saw at its real position in the document.
 //
-// Every directory is walked except .git, .github, .claude, node_modules and checks.
+// Exit 2 (`no-third-party: BLIND, ...`: could not look) when the root or a file cannot be
+// read, a file is not UTF-8 text (NUL bytes, or a UTF-16 byte order mark), or there is no
+// index.html at the root: zero pages checked is "never looked", not "all fine".
 //
-// Not covered here: srcset, action, formaction, poster, <meta http-equiv=refresh>,
-// @import "url" and image-set("url") strings, entity-encoded URLs (h&#116;tps://),
-// scripts and inline event handlers, .htm files, and everything about the privacy
-// page's content. Two parse gaps: an HTML element that breaks out of svg or math
-// (<svg><div/></svg>) is treated as if it stayed inside, and the legacy
+// Every directory is walked except .git, .github, .claude and node_modules. checks/ is
+// walked on purpose: the demo serves the whole checkout (ADR-0006), so a page committed
+// there is a page on the site. That is why the self-test builds its fixtures in a temp
+// directory and commits none. A page under a skipped directory would be served and not
+// read.
+//
+// Not covered here: image-set("url") and the other CSS functions that take a string
+// (cross-fade(), image(), src()); the obsolete URL attributes background, manifest,
+// codebase, archive and classid; entity-encoded URLs (h&#116;tps://); scripts, inline
+// event handlers and javascript: URLs (a script can reach any origin and nothing here
+// can see that; PRODUCT.md's Tech says the site has none); .htm files; and everything
+// about the privacy page's content. Two parse gaps: an HTML element that breaks out of
+// svg or math (<svg><div/></svg>) is treated as if it stayed inside, and the legacy
 // <script><!-- <script> ... </script> --> </script> form is reported as a stray end
 // tag.
 
@@ -37,7 +65,7 @@ import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const SKIP_DIRS = new Set([".git", ".github", ".claude", "node_modules", "checks"]);
+const SKIP_DIRS = new Set([".git", ".github", ".claude", "node_modules"]);
 const VOID = new Set([
   "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param",
   "source", "track", "wbr",
@@ -139,25 +167,78 @@ function readCssUrl(text, i) {
   return out;
 }
 
-function offOrigin(text) {
+// The attributes whose value the browser loads or submits to, and href, which is a load
+// everywhere except on <a>. A name that follows a word character or "-" (data-src) is a
+// different attribute, and xlink:href still matches.
+const URL_ATTR =
+  /(?<![\w-])(src|srcset|imagesrcset|poster|data|action|formaction|ping|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi;
+// These hold several URLs, separated by whitespace and commas.
+const URL_LIST = new Set(["srcset", "imagesrcset", "ping"]);
+
+// Does the sorted list of disjoint [start, end) spans contain index?
+function inSpans(spans, index) {
+  let lo = 0;
+  let hi = spans.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (index < spans[mid][0]) hi = mid - 1;
+    else if (index >= spans[mid][1]) lo = mid + 1;
+    else return true;
+  }
+  return false;
+}
+
+// Where a <meta http-equiv="refresh"> content value sends the browser: what follows the
+// delay, its separator, an optional url= and an optional quote. Null when it has no URL.
+function refreshTarget(content) {
+  return /^\s*[\d.]*\s*[;,]?\s*(?:url\s*=\s*)?["']?\s*(.*)$/is.exec(content)?.[1] || null;
+}
+
+// `anchors` are the [start, end) spans of the <a> start tags and `metas` the [start, text]
+// of the <meta> start tags that parseHtml saw at their real place in the document; a .css
+// file has neither.
+function offOrigin(text, anchors = [], metas = []) {
   const found = [];
-  const add = (index, raw) => {
+  const add = (index, raw, note = "") => {
     // Browsers strip leading C0 controls and spaces, drop tabs and newlines inside a URL,
     // and read a backslash as a slash in http(s) URLs.
     const value = raw.replace(/^[\u0000- ]+/, "").replace(/[\t\n\r]/g, "").replace(/\\/g, "/");
     if (/^(?:https?:|\/\/)/i.test(value)) {
-      found.push(`${lineOf(text, index)}: URL on another origin: ${value.slice(0, 200)}`);
+      found.push(`${lineOf(text, index)}: URL on another origin: ${value.slice(0, 200)}${note}`);
     }
   };
-  for (const m of text.matchAll(/(?<![\w-])(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi)) {
-    add(m.index, m[1] ?? m[2] ?? m[3]);
+  for (const m of text.matchAll(URL_ATTR)) {
+    const name = m[1].toLowerCase();
+    const value = m[2] ?? m[3] ?? m[4];
+    if (name === "href") {
+      if (!inSpans(anchors, m.index)) add(m.index, value, " (an href may leave the site only on an <a>)");
+    } else if (URL_LIST.has(name)) {
+      for (const item of value.split(/[\s,]+/)) add(m.index, item);
+    } else {
+      add(m.index, value);
+    }
+  }
+  for (const [index, tag] of metas) {
+    if (!/[\s"']http-equiv\s*=\s*(?:"\s*refresh\s*"|'\s*refresh\s*'|refresh(?![^\s>\/]))/i.test(tag)) continue;
+    const c = /[\s"']content\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/i.exec(tag);
+    const target = c && refreshTarget(c[1] ?? c[2] ?? c[3]);
+    if (target) add(index + c.index, target);
   }
   for (const m of text.matchAll(URL_OPEN)) add(m.index, readCssUrl(text, m.index + m[0].length));
+  for (const m of text.matchAll(/@import\s*/gi)) add(m.index, readCssUrl(text, m.index + m[0].length));
   return found;
 }
 
-// Returns a "line: message" string for the first problem, or null.
-function parseProblem(text) {
+// Walks the document once: `problem` is a "line: message" string for the first parse
+// problem, or null; `anchors` and `metas` are what offOrigin needs. A tag inside a
+// comment or a script is not at a real place in the document, so it is in neither.
+function parseHtml(text) {
+  const out = { problem: null, anchors: [], metas: [] };
+  out.problem = walk(text, out);
+  return out;
+}
+
+function walk(text, out) {
   const stack = [];
   let foreign = 0; // how many svg and math elements are open on the stack
   const at = (index, msg) => `${lineOf(text, index)}: ${msg}`;
@@ -203,6 +284,8 @@ function parseProblem(text) {
       const name = m[1].toLowerCase();
       const start = i;
       i += m[0].length;
+      if (name === "a") out.anchors.push([start, i]);
+      else if (name === "meta") out.metas.push([start, m[0]]);
       // Inside inline SVG and MathML, "/>" closes an element (<path/>); in HTML it is ignored.
       if (VOID.has(name) || (m[3] === "/" && (isForeign(name) || foreign > 0))) continue;
       stack.push({ name, index: start });
@@ -251,25 +334,26 @@ function run(root) {
       throw new Blind(`${name} is not UTF-8 text (NUL bytes or a UTF-16 byte order mark), so it cannot be read`);
     }
     const text = bytes.toString("utf8");
-    for (const p of offOrigin(text)) problems.push(`${name}:${p}`);
-    if (/\.html$/i.test(file)) {
+    const isHtml = /\.html$/i.test(file);
+    const parsed = isHtml ? parseHtml(text) : undefined;
+    for (const p of offOrigin(text, parsed?.anchors, parsed?.metas)) problems.push(`${name}:${p}`);
+    if (isHtml) {
       html += 1;
-      const p = parseProblem(text);
-      if (p) problems.push(`${name}:${p}`);
+      if (parsed.problem) problems.push(`${name}:${parsed.problem}`);
     }
   }
   if (problems.length > 0) {
     for (const p of problems) console.error(p);
-    console.error(`check: FAIL, ${problems.length} problem(s) in ${files.length} file(s) under ${root}`);
+    console.error(`no-third-party: FAIL, ${problems.length} problem(s) in ${files.length} file(s) under ${root}`);
     return 1;
   }
-  console.log(`check: OK, ${html} html and ${files.length - html} css file(s) checked under ${root}`);
+  console.log(`no-third-party: PASS, ${html} html and ${files.length - html} css file(s) read under ${root}`);
   return 0;
 }
 
 try {
   process.exitCode = run(process.argv[2] ?? fileURLToPath(new URL("..", import.meta.url)));
 } catch (e) {
-  console.error(`check: could not look, ${e instanceof Blind ? e.message : e.stack}`);
+  console.error(`no-third-party: BLIND, ${e instanceof Blind ? e.message : e.stack}`);
   process.exitCode = 2;
 }
