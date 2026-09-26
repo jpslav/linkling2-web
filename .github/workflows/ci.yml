@@ -26,7 +26,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-      # R-023: the site loads nothing from another origin.
+      # R-023: the site loads nothing from another origin, and has no <script> or on...= attribute.
       - run: sh checks/no-third-party.sh
       # R-021: the landing page says what Linkling is.
       - run: sh checks/landing.sh

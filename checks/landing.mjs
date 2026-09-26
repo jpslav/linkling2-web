@@ -5,17 +5,27 @@
 //
 //   sh checks/landing.sh [site-root]      (default: the repo root)
 //
-// It reads index.html, drops everything a visitor does not read as page copy (comments,
-// <script>, <style>, <title>, <textarea> and every tag with its attributes), and looks in
-// what is left for three statements:
+// It reads index.html, drops everything a visitor does not read as page copy (comments;
+// <script>, <style>, <title>, <textarea>, <noscript> and <template> with what is inside
+// them; and every tag with its attributes), reads &nbsp; and its numeric forms as a space,
+// and looks in what is left for three statements:
 //   - it names Linkling;
 //   - it says what Linkling is: a "link shortener";
-//   - it says clicks are not tracked: "nobody" or "no one" and "tracked" in one sentence
-//     ("Nobody who clicks a short link is tracked beyond a daily count."), or "tracks
-//     nobody", or "not tracked" or "never tracked".
+//   - it says clicks are not tracked, in one of three shapes (NOT_TRACKED below):
+//     "nobody" or "no one", optionally "who clicks", "opens", "follows", "visits" or "uses"
+//     and a short clause with no punctuation and no conjunction in it, then "is", "gets",
+//     "will be" or "is being" and "tracked" ("Nobody who clicks a short link is tracked
+//     beyond a daily count."); or "tracks nobody"; or "clicks", "visits", "visitors" or
+//     "you" followed by "are" or "is" and "not", "n't" or "never" and "tracked".
 // It is a tripwire on the promise's wording, not proof that the promise is kept: the
-// service's own tests (R-009, R-020) and the privacy page's check (R-022) do that. Text
-// hidden by CSS or by an attribute still counts as text.
+// service's own tests (R-009, R-020) do that for what it stores, and the privacy page's
+// check (R-022) for what the page lists. Three limits, each pinned by a `gap-` case in
+// selftest.mjs: text hidden by CSS or by an attribute still counts as text; what comes after
+// "tracked" is not read, so "Nobody is tracked by name, but every click is logged with its IP
+// address" passes; and a subject that is not the one who clicks passes when it is one of the
+// shapes ("Nobody who uses the dashboard is tracked"). A promise worded another way fails,
+// and the message lists the shapes looked for; no entity other than a non-breaking space is
+// read.
 //
 // Exit 0, `landing: PASS, ...`, when all three are there.
 // Exit 1, `landing: FAIL, ...` after one line per missing statement, when one is not, or
@@ -33,9 +43,10 @@ class Blind extends Error {}
 // Words that start a second clause. Inside "nobody who clicks ..." they end the clause about
 // who clicks, so "nobody who clicks needs an account and every click is tracked" is not a promise.
 const CLAUSE_BREAK = "(?: and| but| or| yet| so| while| though| although| because)";
-// The three shapes of the promise, each strict about who is not tracked. A sentence that uses
-// the words and promises the opposite, or nothing ("Nobody likes being tracked", "whether or
-// not tracked", "nobody who clicks needs an account, and every click is tracked"), is none of them.
+// The three shapes of the promise, each strict about who is not tracked. These sentences use
+// the words and are none of them: "Nobody likes being tracked", "whether or not tracked",
+// "nobody who clicks needs an account, and every click is tracked". What follows "tracked" is
+// not read, so a sentence that contradicts the promise after it still matches (see the header).
 const NOT_TRACKED = new RegExp(
   [
     // "nobody is tracked", "no one who clicks a short link is tracked": the one tracked is the
@@ -56,8 +67,9 @@ const STATEMENTS = [
     NOT_TRACKED,
   ],
 ];
-// Elements whose content is not page copy: the parser reads it as raw text, or the browser
-// shows it somewhere other than in the page.
+// Elements whose content is not page copy: the parser reads it as raw text (script, style,
+// title, textarea), or a browser does not show it in the page (a noscript, when scripting is
+// on, and a template).
 const HIDDEN = new Set(["script", "style", "title", "textarea", "noscript", "template"]);
 
 // One pass, no backtracking. A comment ends at the first "-->", an unterminated one runs to

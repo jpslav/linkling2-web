@@ -2,10 +2,12 @@
 // The self-test for the two site checks: R-023 (`checks/no-third-party.sh`) and R-021
 // (`checks/landing.sh`). It builds each case as a small site under a temp directory, runs
 // the real entry point on it, and compares the exit code and the words it printed with what
-// the case expects. Every failing case is a control site plus exactly one edit, and the
-// control case must stay green, so a red means the edit did it. The output is matched as
-// well as the exit code: a fixture that fails for the wrong reason (it does not parse, say)
-// would otherwise pass as the red it was meant to be.
+// the case expects. A failing case is a clean site plus the one thing that should make it
+// fail, and the clean controls (`control-clean`, `pass-landing-the-three-statements`) must
+// stay green, so a red is that thing's doing. The output is matched as well as the exit
+// code: a fixture that fails for the wrong reason (it does not parse, say) would otherwise
+// pass as the red it was meant to be. The `gap-` cases pin what the checks' headers say they
+// do not cover: they pass, and a change that closes a gap should turn them into failing cases.
 //
 //   node checks/selftest.mjs            (VERBOSE=1 prints every case, not only mismatches)
 //
@@ -23,7 +25,7 @@
 // that does not exist, `sh` that cannot be started) or has two cases of the same name.
 // A case that needs a file the process cannot read is skipped when the process is root,
 // because chmod 000 does not stop root: skipped cases are counted and printed, never
-// silently passed. If node itself is missing, the shell reports 127 and CI is red.
+// silently passed. If node itself is missing, the shell reports 127 for this file and CI is red.
 
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -47,7 +49,7 @@ const HEAD = (extra) =>
 const TAIL = "\n</body>\n</html>\n";
 const page = (body, head = "") => HEAD(head) + body + TAIL;
 const CSS_OK = "body { margin: 0; background: url(bg.png); }\n";
-// A one-page site with a clean stylesheet: the control every failing case is an edit of.
+// A one-page site with a clean stylesheet: the clean site most failing cases are one edit of.
 const site = (body, { head = "", css = CSS_OK, extra = {} } = {}) => ({
   "index.html": page(body, head),
   "style.css": css,
@@ -125,6 +127,13 @@ ntpPass("pass-css-escape-space-relative", cssSite(raw`a{background:url(\61 .png)
 ntpPass("pass-css-not-a-url-function", cssSite("a{background:curly(https://x) ; b: url (https://x)}"));
 ntpPass("pass-utf8-bom", { "index.html": "\ufeff" + page("<p>ok</p>"), "style.css": "\ufeffa{color:red}\n" });
 ntpPass("pass-non-page-files-ignored", site("<p>ok</p>", { extra: { ".DS_Store": Buffer.from("\0\0junk"), "notes.txt": "src=https://evil.example/x" } }));
+// Only .html and .css files are read: a served .htm, .svg, .js or .webmanifest is not (the header says so).
+ntpPass("gap-other-served-file-types-are-not-read", site("<p>ok</p>", { extra: {
+  "old.htm": '<img src="https://evil.example/a.png">',
+  "logo.svg": '<svg><image href="https://evil.example/a.png"/></svg>',
+  "app.js": 'fetch("https://evil.example/")',
+  "site.webmanifest": '{"icons":[{"src":"https://evil.example/i.png"}]}',
+} }));
 ntpPass("pass-skipped-directories", site("<p>ok</p>", { extra: { ".git": "gitdir: /x", ".github/x.html": "<div>", ".claude/x.html": "<div>", "node_modules/x.html": '<img src="https://evil.example/x">' } }));
 ntpPass("pass-page-in-subdirectory", site("<p>ok</p>", { extra: { "docs/about.html": page("<p>about</p>") } }), "2 html and 1 css");
 // What the check header says it does not cover, pinned so the header stays true: a change
@@ -133,6 +142,15 @@ ntpPass("gap-svg-breakout-div-passes", site("<svg><div/></svg>"));
 ntpPass("gap-css-image-set-string-passes", cssSite('a{background:image-set("https://evil.example/a.png" 1x)}'));
 ntpPass("gap-entity-encoded-src-passes", site('<img src="h&#116;tps://evil.example/a.png" alt="">'));
 ntpPass("gap-javascript-url-passes", site('<a href="javascript:void(0)">x</a>'));
+ntpPass("gap-iframe-srcdoc-script-passes", site('<iframe srcdoc="<script>alert(1)</script>"></iframe>'));
+ntpPass("gap-obsolete-background-attribute-passes", site('<table background="https://evil.example/x.png"><tr><td>x</td></tr></table>'));
+ntpPass("gap-obsolete-manifest-codebase-archive-classid-pass", site('<div manifest="https://evil.example/m.appcache"></div><object codebase="https://evil.example/" archive="https://evil.example/a.jar" classid="java:x"></object>'));
+ntpPass("gap-svg-set-href-passes", site('<svg><image href="a.png"><set attributeName="href" to="https://evil.example/a.png"/></image></svg>'));
+// Where the walk and a browser disagree about where a tag or a raw-text element ends.
+ntpPass("gap-cdata-in-svg-hides-an-image-passes", site('<svg><![CDATA[ x > <a title="]]><image href=https://evil.example/x.png>">t</a></svg>'));
+ntpPass("gap-svg-style-hides-a-script-passes", site("<svg><style><script>alert(1)</script></style></svg>"));
+ntpPass("gap-xmp-hides-a-script-passes", site('<xmp><p title="</xmp><script>alert(1)</script>"></p></xmp>'));
+ntpPass("gap-noembed-hides-a-script-passes", site('<noembed><p title="</noembed><script>alert(1)</script>"></p></noembed>'));
 // No scripts (the privacy page says so): no <script> element and no on...= event-handler attribute.
 const NO_SCRIPT = /index\.html:\d+: <script> element: the site runs no scripts/;
 const NO_HANDLER = (name, tag) => new RegExp(`index\\.html:\\d+: ${name} event handler on <${tag}>: the site runs no scripts`);
@@ -253,7 +271,7 @@ ntpFail("fail-unterminated-tag-at-eof", site("<div"), /malformed start tag/);
 ntpFail("fail-html-div-self-closing", site("<div/>"), /<div> is not closed before <\/body>/);
 ntpFail("fail-empty-comment-form-hides-a-div", site("<!--> <div> <!-- x -->"), /<div> is not closed before <\/body>/);
 ntpFail("fail-comment-ending-bang-hides-a-div", site("<!-- a --!> <div> <!-- b -->"), /<div> is not closed before <\/body>/);
-ntpFail("gap-script-double-escape-is-a-stray-end-tag", site("<script>\n<!--\n<script>x</script>\n-->\n</script>"), /stray <\/script>/);
+ntpFail("fail-script-double-escape-form-is-a-stray-end-tag",site("<script>\n<!--\n<script>x</script>\n-->\n</script>"), /stray <\/script>/);
 
 // Where the walk and a browser could disagree about where a tag ends. HTML whitespace is
 // space, tab, LF, FF and CR; NBSP and VT are part of a name or a value, so a tag that a
@@ -262,15 +280,18 @@ const LINK_ITEM = '<link rel=stylesheet href=https://evil.example/x.css>';
 ntpFail("fail-tag-nbsp-before-quote-does-not-hide-a-link", site(`<a x= ">${LINK_ITEM}">x</a>`), HREF_NOT_A);
 ntpFail("fail-tag-vt-before-quote-does-not-hide-a-link", site(`<a x=\u000b">${LINK_ITEM}">x</a>`), HREF_NOT_A);
 ntpFail("fail-script-end-tag-with-nbsp-is-not-an-end-tag", site(`<script></script ><a title="</script>${LINK_ITEM}">x</a>`), HREF_NOT_A);
-// A quote that never closes in prose must not swallow the tags after it and their attributes.
-ntpFail("fail-unclosed-quote-in-prose-does-not-hide-a-link", site("<p>ok</p>", { head: `<meta name="description" content="Tip: set data='">\n${LINK_ITEM}\n<meta name="author" content="O'Brien">\n` }), HREF_NOT_A);
-ntpFail("fail-unclosed-quote-after-src-does-not-hide-a-link", site("<p>ok</p>", { head: `<meta name="description" content="see src='">\n${LINK_ITEM}\n<meta name="author" content="O'Brien">\n` }), HREF_NOT_A);
+// A quote that never closes must not swallow what comes after it. In an attribute value the tag
+// is read attribute by attribute; in text outside every tag (a stylesheet) the raw scan reads
+// the value in a lookahead, so it goes on inside the value.
+ntpFail("fail-unclosed-quote-in-an-attribute-value-does-not-hide-a-link", site("<p>ok</p>", { head: `<meta name="description" content="Tip: set data='">\n${LINK_ITEM}\n<meta name="author" content="O'Brien">\n` }), HREF_NOT_A);
+ntpFail("fail-unclosed-quote-after-src-in-an-attribute-value-does-not-hide-a-link", site("<p>ok</p>", { head: `<meta name="description" content="see src='">\n${LINK_ITEM}\n<meta name="author" content="O'Brien">\n` }), HREF_NOT_A);
+ntpFail("fail-css-unclosed-quote-in-a-string-does-not-hide-a-selector", cssSite(`a::after { content: "set data='" } img[src="https://evil.example/x.png"] { color: red } b::after { content: "O'Brien" }`), OFF);
 ntpFail("fail-attributionsrc", site('<img src="a.png" attributionsrc="https://evil.example/r" alt="">'), OFF);
 ntpFail("fail-attributionsrc-second-url", site('<a href="x.html" attributionsrc="/r https://evil.example/r">x</a>'), OFF);
 ntpFail("fail-css-import-escaped-keyword", site('<style>@\\69mport "https://evil.example/x.css";</style>'), OFF);
 ntpFail("fail-css-import-uppercase-keyword", cssSite('@IMPORT "https://evil.example/x.css";'), OFF);
 // A value inside a start tag is opaque: an allowed link, or a same-origin URL, may carry an
-// absolute URL in its query. The scan goes on after the value, but never past the tag's end.
+// absolute URL in its query.
 ntpPass("pass-a-href-query-carries-a-src-url", site('<a href="https://a.example/embed?src=https://b.example/v.mp4">b</a>'));
 ntpPass("pass-a-href-query-carries-a-data-url", site('<a href="https://a.example/x?data=https://b.example/d.json">b</a>'));
 ntpPass("pass-a-href-query-carries-an-action-url", site('<a href="https://a.example/x?action=https://b.example/go">b</a>'));
@@ -279,7 +300,9 @@ ntpFail("fail-real-src-after-an-a-with-a-src-query", site('<a href="https://a.ex
 ntpFail("fail-quote-inside-a-tag-value-cannot-carry-the-scan-past-the-tag", site(`<p title="src='">${LINK_ITEM}<p title='x'>ok</p>`), HREF_NOT_A);
 // The attributes of a start tag are read from the tag, so a value that ends in a name from the list
 // (alt="x src=") cannot make the scan take its closing quote for an opening one and step over the
-// real attribute that follows. Each of these passed the check at one earlier commit or another.
+// real attribute that follows. The first five and the meta refresh below passed the check at
+// commit 2139f99; the duplicate, valueless and unquoted ones are guards, which the check failed at
+// every commit since 7373b0a.
 ntpFail("fail-alt-ending-in-src-does-not-hide-the-src", site('<img alt="x src=" src="https://evil.example/a.png">'), OFF);
 ntpFail("fail-placeholder-ending-in-data-does-not-hide-formaction", site('<form><input placeholder="?data=" formaction="https://evil.example/go"></form>'), OFF);
 ntpFail("fail-title-ending-in-data-does-not-hide-srcset", site('<img title="data=" srcset="https://evil.example/a.png 2x" src="a.png" alt="">'), OFF);
@@ -338,7 +361,7 @@ const withoutEngine = ({ tool, target, dir }) => {
 ntpBlind("blind-node-absent", ONE_PAGE(), /no-third-party: BLIND, node is not on PATH/, { spawn: withoutNode });
 ntpBlind("blind-engine-absent", ONE_PAGE(), /no-third-party: BLIND, .*check\.mjs is missing or unreadable/, { spawn: withoutEngine });
 // The engine is there but does not say what it found: an entry point passes on an exit code
-// only when the engine's last word agrees with it. `source` gets the entry point's prefix.
+// only when the engine's output says the matching verdict. `source` gets the entry point's prefix.
 const withEngine = (source) => ({ tool, target, dir }) => {
   const lone = join(dir, "lone");
   mkdirSync(lone);
@@ -362,7 +385,8 @@ for (const [label, [source, rc]] of Object.entries(SILENT_ENGINES)) {
   }
 }
 
-// ---- Speed: the LL-001 reviewers found inputs that took seconds to minutes. Each must finish.
+// ---- Speed: the LL-001 reviewers found inputs that took 3 to 17 seconds (linkling2-web PR #1,
+// the harness comment). Each must finish within TIMEOUT_MS.
 const perfSite = (css, body = "<p>ok</p>") => site(body, { css });
 ntpPass("perf-css-url-and-spaces", perfSite(("a{b:url(" + " ".repeat(20000) + "\n").repeat(5)));
 ntpPass("perf-css-url-chain", perfSite("a{b:" + "url(".repeat(300000) + "}\n"));
@@ -420,6 +444,9 @@ lanFail("fail-landing-opposite-promise-after-but", "<h1>Linkling</h1><p>A link s
 lanFail("fail-landing-who-clause-is-not-about-clicking", "<h1>Linkling</h1><p>A link shortener. Nobody who cares is tracked less than the rest.</p>", CLAIM);
 // Not the promise: links are not the ones being tracked.
 lanFail("fail-landing-links-not-tracked-is-not-the-promise", "<h1>Linkling</h1><p>A link shortener. Expired links are not tracked. Every other click is logged with its IP address.</p>", CLAIM);
+// Text a visitor may not see still counts as text (the header says so).
+lanPass("gap-landing-text-hidden-by-css-passes", '<h1>Linkling</h1><p>A link shortener.</p><p style="display:none">Nobody who clicks is tracked.</p>');
+lanPass("gap-landing-text-hidden-by-an-attribute-passes", "<h1>Linkling</h1><p>A link shortener.</p><p hidden>Nobody who clicks is tracked.</p>");
 // What a regex cannot tell from the promise, pinned so the header stays true: a qualifier or a second
 // sentence after "tracked", a negated wrapper, or a subject that is not the one who clicks.
 lanPass("gap-landing-qualifier-and-a-contradiction-after-tracked-passes", "<h1>Linkling</h1><p>A link shortener. Nobody is tracked by name, but every click is logged with its IP address and browser.</p>");

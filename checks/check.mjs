@@ -1,49 +1,59 @@
 #!/usr/bin/env node
-// The engine of the public site's CI check for R-023: the site loads nothing from any
-// other origin. Dependency-free on purpose: the site has no build step and no package
-// manager (linkling-api docs/adr/0007-repo-layout.md). Run it through its entry point,
+// The engine of the public site's CI check for R-023 (the site loads nothing from any other
+// origin), which also enforces the privacy page's promise that the pages have no scripts.
+// Dependency-free on purpose: the site has no build step and no package manager
+// (linkling-api docs/adr/0007-repo-layout.md). Run it through its entry point,
 // `checks/no-third-party.sh`, the name linkling-api docs/adr/0008-third-party-services.md
-// gives: the script turns "node or this file is missing" into exit 2 instead of a shell
-// error. `node checks/check.mjs [site-root]` is the same check without that guard.
+// gives. The script exits 2 when node or this file is missing, and when this file does not
+// say PASS, FAIL or BLIND to match its exit code (an empty file, a syntax error, a killed
+// process). `node checks/check.mjs [site-root]` is the same check without that guard.
 //
 //   sh checks/no-third-party.sh [site-root]      (default: the repo root)
 //
 // It is a tripwire for accidents (a pasted font @import, an analytics snippet, a
-// mailing-list form), not a defence against an author trying to hide a load.
+// mailing-list form, a script tag), not a defence against an author trying to hide a load.
 //
 // Exit 0, and `no-third-party: PASS, N html and M css file(s) read under ROOT`, when
 // nothing below is wrong.
 //
 // Exit 1, one `file:line: problem` line each and then `no-third-party: FAIL, ...`, when
-//   - the text of an .html or .css file holds one of the attributes src, srcset,
-//     imagesrcset, poster, data, action, formaction, ping or href, followed by a value
-//     that starts with http: or https: (with or without the //) or is protocol-relative
-//     (//host). For srcset, imagesrcset and ping every whitespace or comma separated
-//     item counts. The site's own origin is not known yet, so every absolute URL counts as
-//     another origin (ADR-0008: the site loads nothing from any other origin);
-//   - that attribute is href and it is not an attribute of an <a> start tag. Outbound
-//     <a href> links are allowed (products/linkling/DECISIONS.md, 2026-09-26, "May the
-//     public site link out to other sites?"): a link loads nothing and tells nobody
-//     anything until someone follows it. The href of a <link>, <base>, <area>, <use> or
-//     <image> is a load or changes where other URLs point, so it counts;
-//   - a url(...) or an @import "..." string in CSS (in a .css file, a <style> element or
-//     a style attribute) has a value of that shape, or the target of a
-//     <meta http-equiv="refresh"> has;
+//   - a start tag in an .html file has one of the attributes src, srcset, imagesrcset,
+//     poster, data, action, formaction, ping, attributionsrc or href, or the text of an
+//     .html or .css file has one outside a start tag, followed by a value that starts with
+//     http: or https: (with or without the //) or is protocol-relative (//host). For srcset,
+//     imagesrcset, ping and attributionsrc every whitespace or comma separated item counts.
+//     The site's own origin is not known yet, so every absolute URL counts as another
+//     origin (ADR-0008: the site loads nothing from any other origin);
+//   - that attribute is an href and its element is not an <a>. Outbound <a href> links are
+//     allowed (products/linkling/DECISIONS.md, 2026-09-26, "May the public site link out to
+//     other sites?"): a link loads nothing and tells nobody anything until someone follows
+//     it. Any other element's absolute href counts: <link>, <use> and <image> load it,
+//     <base> changes where every other URL points, and an <area>, a custom element and a
+//     canonical <link> are not an <a> (the site's origin is not known, so no absolute URL is
+//     its own);
+//   - a url(...) or an @import "..." string in CSS (in a .css file, a <style> element or a
+//     style attribute) has a value of that shape (a style attribute may wrap it in &quot;
+//     or &#39;, which is read), or the target of a <meta http-equiv="refresh"> has;
+//   - a page holds a <script> start tag, or an attribute whose name starts with "on"
+//     (onclick, onerror, onload ...): privacy.html promises "The pages of this site have no
+//     scripts". A custom attribute such as once or only starts with "on" too, and is caught;
 //   - an .html file is not well-formed enough to parse: an unterminated comment, tag,
 //     <script>, <style>, <textarea> or <title>; a start tag that does not fit the tag
 //     grammar; a stray end tag; or an element left open (elements whose end tag HTML
 //     lets you omit, such as p, li and td, are excepted). One parse problem per file,
 //     the first, since everything after it is parsed from an unreliable state. The parse
-//     walk is also what finds the <a> tags above, so an href after a parse problem is not
-//     recognised as an <a> href and counts;
+//     walk is also what finds the start tags whose attributes are read one by one (below),
+//     so after a parse problem the rest of the file is read as raw text, and an <a href>
+//     there counts;
 //   - a symlink sits in the tree: it would be skipped, and skipped means unchecked.
-// The scan reads raw text, so a match in a comment, a script or prose counts, and so does
-// a canonical link. The one exemption is an href inside an <a> start tag that the parse
-// walk saw at its real position in the document.
+// Outside the start tags the walk saw (prose, a comment, a script's text, a stylesheet,
+// whatever follows a parse problem) the scan reads raw text, so a match there counts.
+// Inside a start tag the attributes are read one by one, so a value is opaque: an <a href>
+// may carry ?src=https://... in its query, and alt="x src=" hides nothing.
 //
-// Exit 2 (`no-third-party: BLIND, ...`: could not look) when the root or a file cannot be
-// read, a file is not UTF-8 text (NUL bytes, or a UTF-16 byte order mark), or there is no
-// index.html at the root: zero pages checked is "never looked", not "all fine".
+// Exit 2 (`no-third-party: BLIND, ...`: could not look) when the root, a directory or a
+// file cannot be read, a file is not UTF-8 text (NUL bytes, or a UTF-16 byte order mark),
+// or there is no index.html at the root: zero pages checked is "never looked", not "all fine".
 //
 // Every directory is walked except .git, .github, .claude and node_modules. checks/ is
 // walked on purpose: the demo serves the whole checkout (ADR-0006), so a page committed
@@ -51,15 +61,24 @@
 // directory and commits none. A page under a skipped directory would be served and not
 // read.
 //
-// Not covered here: image-set("url") and the other CSS functions that take a string
-// (cross-fade(), image(), src()); the obsolete URL attributes background, manifest,
-// codebase, archive and classid; entity-encoded URLs (h&#116;tps://); scripts, inline
-// event handlers and javascript: URLs (a script can reach any origin and nothing here
-// can see that; PRODUCT.md's Tech says the site has none); .htm files; and everything
-// about the privacy page's content. Two parse gaps: an HTML element that breaks out of
-// svg or math (<svg><div/></svg>) is treated as if it stayed inside, and the legacy
-// <script><!-- <script> ... </script> --> </script> form is reported as a stray end
-// tag.
+// Not covered here, so a load or a script that uses one of these passes; selftest.mjs pins
+// each as a `gap-` case so this list stays true:
+//   - image-set("url"), a string in a CSS function; an @import with a comment between the
+//     keyword and its string;
+//   - the obsolete URL attributes background, manifest, codebase, archive and classid;
+//   - entity-encoded URLs (h&#116;tps://) and attribute values (http-equiv="&#114;efresh"),
+//     except a &quot; or &#39; in front of a url();
+//   - javascript: URLs, and a script inside an iframe's srcdoc;
+//   - files that are not .html or .css: .htm, .svg, .js and .webmanifest are never read;
+//   - <set> in svg, which can set an href to a value the check never reads.
+// The privacy page's content is checks/privacy-matches-service.sh's to check, not this one's.
+// The walk is a tripwire's tokenizer, not a browser. Where it and a browser disagree about
+// where a tag or a raw-text element ends, a tag can hide from the check, and so can a script:
+//   - an HTML element that breaks out of svg or math (<svg><div/></svg>) is treated as if it
+//     stayed inside;
+//   - <![CDATA[ in svg ends at the first ">", where a browser ends it at "]]>";
+//   - <style> inside svg is read as raw text, and <xmp> and <noembed> as markup, where a
+//     browser reads the reverse.
 
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -75,8 +94,9 @@ const OPTIONAL_END = new Set([
   "tfoot", "option", "optgroup", "colgroup", "caption", "rt", "rp",
 ]);
 const RAW_TEXT = new Set(["script", "style", "textarea", "title"]);
-// HTML's whitespace is these five characters. JavaScript's \s also takes NBSP, VT and more,
-// which a browser reads as part of a name or a value, so it would end a tag somewhere else.
+// HTML's whitespace is these five characters (the HTML Standard's "ASCII whitespace"). Its
+// tokenizer reads any other character, NBSP and VT included, as part of a name or a value;
+// JavaScript's \s takes both as whitespace, so it would end a tag somewhere else.
 const WS = "[ \\t\\n\\f\\r]";
 const NOT_WS = " \\t\\n\\f\\r";
 const START_TAG = new RegExp(
@@ -173,16 +193,16 @@ function readCssUrl(text, i) {
   return out;
 }
 
-// The attributes whose value the browser loads or submits to, and href, which is a load
-// everywhere except on <a>. Two readers use the same names:
+// The attributes whose value the browser loads or submits to, and href, which only an <a>
+// may point off the site. Two readers use the same names:
 //  - Inside a start tag the walk saw, offOrigin reads the tag's attributes one by one from the
 //    tag grammar (ATTR), so a value is opaque: an allowed link may carry ?src=https://... in
 //    its query, and an alt="x src=" cannot make the next real attribute look like a value.
-//  - Everywhere else (prose, a comment, a script, a stylesheet, whatever follows a parse
-//    problem) URL_ATTR scans the raw text. A name that follows a word character or "-"
+//  - Everywhere else (prose, a comment, a script's text, a stylesheet, whatever follows a
+//    parse problem) URL_ATTR scans the raw text. A name that follows a word character or "-"
 //    (data-src) is a different attribute, and xlink:href still matches. The value is read in
-//    a lookahead, so a match ends at the "=" and a quote that never closes (prose such as
-//    data=') cannot swallow the tags after it.
+//    a lookahead, so a match ends at the "=" and a quote that never closes (a CSS string
+//    such as content: "data='") cannot swallow what follows it.
 const URL_NAMES = "src|srcset|imagesrcset|poster|data|action|formaction|ping|attributionsrc|href";
 const URL_ATTR = new RegExp(`(?<![\\w-])(${URL_NAMES})\\s*=\\s*(?=(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>\`]+)))`, "gi");
 // One attribute of a start tag START_TAG has matched: a name, and maybe a value.
@@ -248,8 +268,9 @@ function offOrigin(text, tags = []) {
   }
   // Inside them: the attributes of the tag.
   for (const [start, , name, attrs, attrsAt] of tags) {
-    // The privacy page promises the pages have no scripts: no <script> element, and no
-    // on...= event-handler attribute (no HTML attribute starts with "on" and is not one).
+    // privacy.html promises "The pages of this site have no scripts": no <script> element, and
+    // no attribute whose name starts with "on". Every standard HTML and SVG event handler does;
+    // so does a custom attribute such as once, which is caught too.
     if (name === "script") found.push(`${lineOf(text, start)}: <script> element: the site runs no scripts`);
     let refresh = false;
     const contents = [];

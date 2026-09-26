@@ -6,13 +6,14 @@
 #   sh checks/no-third-party.sh [site-root]      (default: the repo root)
 #
 # Exit 0 `no-third-party: PASS, ...`; exit 1 `no-third-party: FAIL, ...` after one line per
-# problem; exit 2 `no-third-party: BLIND, ...`. This script adds the ways of not looking that
-# a shell would otherwise report as something else: node is not on PATH, or check.mjs is not
-# beside this script (the shell's 127), and check.mjs running but not saying what it found:
-# an empty file (exit 0 and silence), a syntax error (exit 1), a killed process. It passes on
-# an exit code only when the engine's last word agrees with it. All of those are exit 2,
-# never a pass. It runs no external command before the node test, so an empty PATH reaches
-# the node message instead of failing earlier.
+# problem; exit 2 `no-third-party: BLIND, ...`. This script makes exit 2 of the ways of not
+# looking that would otherwise show as something else: node is not on PATH (the shell's
+# 127), check.mjs is not beside this script (node's exit 1), and check.mjs running but not
+# saying what it found: an empty file (exit 0 and silence), a syntax error (exit 1), a killed
+# process (137 for SIGKILL). It passes on an exit code only when the engine's output says the
+# matching verdict anywhere in it: PASS with 0, FAIL with 1, BLIND with 2. Anything else is
+# exit 2, never a pass. It runs no external command before the node test, so an empty PATH
+# reaches the node message instead of failing earlier.
 
 case $0 in
   */*) here=${0%/*} ;;
