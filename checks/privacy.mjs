@@ -7,13 +7,16 @@
 //   sh checks/privacy-matches-service.sh [site-root]      (default: the repo root)
 //
 // It reads the service's privacy-manifest.json (linkling-api ADR-0004 and ADR-0011) and
-// this site's privacy.html. For each manifest entry in `stored`, the page must have a
-// <tr data-stored="<id>"> whose first two cells are the entry's `what` and `kept`; and
-// elements marked data-manifest="counted" and data-manifest="logged" must hold the
-// manifest's `counted` and `logged` sentences. Comments are removed before anything is
-// read, so a commented-out row does not count; tags are dropped, character references
+// this site's privacy.html. For each manifest entry in `stored`, the page must have
+// exactly one <tr data-stored="<id>">, with exactly two cells, the entry's `what` and
+// `kept`; and exactly one element each marked data-manifest="counted" and
+// data-manifest="logged", holding the manifest's `counted` and `logged` sentences. None
+// of those, and no table, thead, tbody or tfoot, may carry the `hidden` attribute.
+// Comments and template, script, style and noscript elements are removed before anything
+// is read, so a row inside one does not count; tags are dropped, character references
 // decoded and whitespace collapsed before text is compared. It is a tripwire on the
-// page's wording, not a full HTML parser: the page is ours and plain.
+// page's wording, not a full HTML parser, and not a defence against CSS that hides text:
+// the page is ours and plain.
 //
 // Where the manifest comes from, first match wins:
 //   PRIVACY_MANIFEST_FILE=<path>   read that file (the self-test, local runs);
@@ -24,13 +27,16 @@
 //   otherwise                      fetch linkling-api's main.
 //
 // Exit 0, `privacy-matches-service: PASS, N manifest entries and 2 statements compared
-// ...`, when the page carries all of it. A page row whose id the manifest lacks prints
-// a WARN line first and does not fail (ADR-0004: the page may change first).
+// ...`, when the page carries all of it. A page row whose id the manifest lacks, or a
+// body row (one with a <td>) with no data-stored at all, prints a WARN line first and
+// does not fail (ADR-0004: the page may change first).
 // Exit 1, one line per difference then `privacy-matches-service: FAIL, ...`, when the
 // manifest holds something the page does not say, or says differently.
 // Exit 2, `privacy-matches-service: BLIND, ...`, when the manifest cannot be fetched or
 // read, is not JSON of the shape above, or lists nothing; or privacy.html is missing,
-// unreadable or not UTF-8 text. Never a pass: not looking is not the same as all fine.
+// unreadable or not valid UTF-8. Never a pass: not looking is not the same as all fine.
+// The wrapper also turns an engine that ends without its verdict line (a crash) into
+// exit 2.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -65,7 +71,8 @@ async function loadManifest(env) {
   if (env.PRIVACY_MANIFEST_URL) tries.push(env.PRIVACY_MANIFEST_URL);
   else {
     const branch = env.PRIVACY_MANIFEST_BRANCH;
-    if (branch && branch !== "main") tries.push(`${RAW}/${encodeURI(branch)}/privacy-manifest.json`);
+    // Each path segment encoded, so a # or ? in a branch name stays part of the name.
+    if (branch && branch !== "main") tries.push(`${RAW}/${branch.split("/").map(encodeURIComponent).join("/")}/privacy-manifest.json`);
     tries.push(`${RAW}/main/privacy-manifest.json`);
   }
   for (const [i, url] of tries.entries()) {
@@ -121,17 +128,31 @@ function attr(tag, name) {
   return m ? (m[1] ?? m[2] ?? m[3]) : null;
 }
 
-// Rows keyed by data-stored, each a list of cell texts; statements keyed by data-manifest.
+// A boolean `hidden` attribute in a start tag's attribute text.
+const isHidden = (attrs) => /(?:^|\s)hidden(?=[\s=\/]|$)/i.test(attrs);
+
+// Rows keyed by data-stored, each { cells, hidden }; statements keyed by data-manifest,
+// each { text, hidden }; `unkeyed` counts body rows (rows with a <td>) that carry no
+// data-stored; `hiddenTables` counts <table>, <thead>, <tbody> and <tfoot> tags marked
+// hidden. Comments, and elements whose content a visitor never reads as the page
+// (template, script, style, noscript), are removed first.
 function readPage(html) {
-  const body = html.replace(/<!--[\s\S]*?(?:-->|$)/g, "");
+  const body = html
+    .replace(/<!--[\s\S]*?(?:-->|$)/g, "")
+    .replace(/<(template|script|style|noscript)\b[\s\S]*?(?:<\/\1\s*>|$)/gi, "");
   const rows = new Map();
+  let unkeyed = 0;
   for (const m of body.matchAll(/<tr\b([^>]*)>([\s\S]*?)(?=<tr\b|<\/tr\s*>|<\/tbody|<\/table|$)/gi)) {
     const id = attr(m[1], "data-stored");
-    if (id === null) continue;
+    if (id === null) {
+      if (/<td\b/i.test(m[2])) unkeyed += 1;
+      continue;
+    }
     const cells = [...m[2].matchAll(/<t[dh]\b[^>]*>([\s\S]*?)(?=<t[dh]\b|<\/t[dh]\s*>|$)/gi)].map((c) => text(c[1]));
     if (!rows.has(id)) rows.set(id, []);
-    rows.get(id).push(cells);
+    rows.get(id).push({ cells, hidden: isHidden(m[1]) });
   }
+  const hiddenTables = [...body.matchAll(/<(?:table|thead|tbody|tfoot)\b([^>]*)>/gi)].filter((m) => isHidden(m[1])).length;
   const statements = new Map();
   for (const m of body.matchAll(/<([a-z][a-z0-9]*)\b([^>]*)>/gi)) {
     const key = attr(m[2], "data-manifest");
@@ -140,9 +161,9 @@ function readPage(html) {
     const rest = body.slice(m.index + m[0].length);
     const end = rest.search(close);
     if (!statements.has(key)) statements.set(key, []);
-    statements.get(key).push(text(end === -1 ? rest : rest.slice(0, end)));
+    statements.get(key).push({ text: text(end === -1 ? rest : rest.slice(0, end)), hidden: isHidden(m[2]) });
   }
-  return { rows, statements };
+  return { rows, statements, unkeyed, hiddenTables };
 }
 
 async function run(root, env) {
@@ -155,12 +176,17 @@ async function run(root, env) {
   } catch (e) {
     throw new Blind(`cannot read ${pagePath}: ${e.code ?? e.message}`);
   }
-  if (bytes.includes(0) || (bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0xfe && bytes[1] === 0xff)) {
-    throw new Blind(`${pagePath} is not UTF-8 text (NUL bytes or a UTF-16 byte order mark)`);
+  let html;
+  try {
+    if (bytes.includes(0) || (bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0xfe && bytes[1] === 0xff)) throw new Error();
+    html = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Blind(`${pagePath} is not UTF-8 text (invalid UTF-8, NUL bytes or a UTF-16 byte order mark)`);
   }
-  const { rows, statements } = readPage(bytes.toString("utf8"));
+  const { rows, statements, unkeyed, hiddenTables } = readPage(html);
 
   const problems = [];
+  if (hiddenTables > 0) problems.push(`privacy.html: ${hiddenTables} table element(s) marked hidden, so a visitor would not read them`);
   for (const e of manifest.stored) {
     const found = rows.get(e.id);
     if (!found) {
@@ -168,23 +194,31 @@ async function run(root, env) {
       continue;
     }
     if (found.length > 1) problems.push(`privacy.html: ${found.length} rows data-stored="${e.id}"`);
-    const [what = "", kept = ""] = found[0];
+    const { cells, hidden } = found[0];
+    const [what = "", kept = ""] = cells;
+    if (hidden) problems.push(`privacy.html: row "${e.id}" is marked hidden`);
+    if (cells.length !== 2) problems.push(`privacy.html: row "${e.id}" has ${cells.length} cells, not 2 (what is stored, how long)`);
     if (what !== norm(e.what)) problems.push(`privacy.html: row "${e.id}" says what is stored as "${what}", the manifest says "${norm(e.what)}"`);
     if (kept !== norm(e.kept)) problems.push(`privacy.html: row "${e.id}" says it is kept "${kept}", the manifest says "${norm(e.kept)}"`);
   }
   for (const key of ["counted", "logged"]) {
     const found = statements.get(key) ?? [];
-    if (!found.includes(norm(manifest[key]))) {
-      problems.push(
-        found.length === 0
-          ? `privacy.html: no element data-manifest="${key}"`
-          : `privacy.html: data-manifest="${key}" says "${found[0]}", the manifest says "${norm(manifest[key])}"`,
-      );
+    if (found.length === 0) {
+      problems.push(`privacy.html: no element data-manifest="${key}"`);
+      continue;
+    }
+    if (found.length > 1) problems.push(`privacy.html: ${found.length} elements data-manifest="${key}", not 1`);
+    if (found[0].hidden) problems.push(`privacy.html: data-manifest="${key}" is marked hidden`);
+    if (found[0].text !== norm(manifest[key])) {
+      problems.push(`privacy.html: data-manifest="${key}" says "${found[0].text}", the manifest says "${norm(manifest[key])}"`);
     }
   }
   const ids = new Set(manifest.stored.map((e) => e.id));
   for (const id of rows.keys()) {
     if (!ids.has(id)) console.log(`${NAME}: WARN, privacy.html has a row data-stored="${id}" the manifest does not list`);
+  }
+  if (unkeyed > 0) {
+    console.log(`${NAME}: WARN, privacy.html has ${unkeyed} table row(s) with no data-stored, which the manifest cannot account for`);
   }
 
   if (problems.length > 0) {

@@ -7,9 +7,11 @@
 #
 # Exit 0 `privacy-matches-service: PASS, ...`; exit 1 `privacy-matches-service: FAIL, ...`
 # after one line per difference; exit 2 `privacy-matches-service: BLIND, ...` when the
-# manifest or the page could not be read. This script adds the two ways of not looking
-# that a shell would otherwise report as "command not found" (127): node is not on PATH,
-# or privacy.mjs is not beside this script. Both are exit 2, never a pass.
+# manifest or the page could not be read. This script adds the ways of not looking that
+# the engine cannot report itself: node is not on PATH, privacy.mjs is not beside this
+# script, or the engine ended without its own verdict line (a crash exits 1 like a FAIL
+# would, having compared nothing). Each is exit 2, never a pass. The engine's stdout and
+# stderr are printed together, on stdout, in the order it wrote them.
 
 case $0 in
   */*) here=${0%/*} ;;
@@ -27,4 +29,17 @@ command -v node >/dev/null 2>&1 || {
   echo "privacy-matches-service: BLIND, $here/privacy.mjs is missing or unreadable, so nothing was read" >&2
   exit 2
 }
-exec node "$here/privacy.mjs" "$@"
+out=$(node "$here/privacy.mjs" "$@" 2>&1)
+code=$?
+[ -n "$out" ] && printf '%s\n' "$out"
+case $code in
+  0) verdict="privacy-matches-service: PASS," ;;
+  1) verdict="privacy-matches-service: FAIL," ;;
+  2) exit 2 ;;
+  *) verdict="" ;;
+esac
+case $out in
+  *"$verdict"*) [ -n "$verdict" ] && exit "$code" ;;
+esac
+echo "privacy-matches-service: BLIND, the check ended with exit $code and without its verdict line, so nothing it compared can be trusted" >&2
+exit 2

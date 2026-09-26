@@ -10,7 +10,7 @@
 // Exit 0 when every case behaved, 1 when any did not.
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -59,6 +59,13 @@ run("commented-out-row", { html: page({ rows: [ROWS[0], `<!-- ${ROWS[1]} -->`] }
 run("statement-missing", { html: page({ logged: "" }).replace(" data-manifest='logged'", "") }, 1, [/no element data-manifest="logged"/, /: FAIL/]);
 run("statement-differs", { html: page({ counted: "Previews do not count." }) }, 1, [/data-manifest="counted" says "Previews do not count\."/, /: FAIL/]);
 run("extra-row-warns", { html: page({ rows: [...ROWS, row("page-only", "Something", "A while")] }) }, 0, [/WARN, privacy\.html has a row data-stored="page-only"/, /: PASS/]);
+run("unkeyed-row-warns", { html: page({ rows: [...ROWS, "<tr><td>Your IP address</td><td>30 days</td></tr>"] }) }, 0, [/WARN, privacy\.html has 1 table row\(s\) with no data-stored/, /: PASS/]);
+run("third-cell", { html: page({ rows: [ROWS[0], ROWS[1].replace("</tr>", "<td>We also keep your address</td></tr>")] }) }, 1, [/row "daily-counts" has 3 cells, not 2/, /: FAIL/]);
+run("duplicate-statement", { html: page().replace("</body>", "<p data-manifest=\"logged\">We log every address.</p></body>") }, 1, [/2 elements data-manifest="logged", not 1/, /: FAIL/]);
+run("table-in-template", { html: page().replace("<table>", "<template><table>").replace("</table>", "</table></template>") }, 1, [/no row data-stored="link-name"/, /: FAIL/]);
+run("hidden-statement", { html: page().replace("<p data-manifest='logged'>", "<p data-manifest='logged' hidden>") }, 1, [/data-manifest="logged" is marked hidden/, /: FAIL/]);
+run("hidden-table", { html: page().replace("<table>", "<table hidden>") }, 1, [/1 table element\(s\) marked hidden/, /: FAIL/]);
+run("page-not-utf8", { html: Buffer.concat([Buffer.from(page()), Buffer.from([0xc3, 0x28])]) }, 2, [/: BLIND, .*privacy\.html is not UTF-8 text/]);
 run("no-page", {}, 2, [/: BLIND, cannot read .*privacy\.html: ENOENT/]);
 run("manifest-not-json", { html: page(), manifestText: "{ not json" }, 2, [/: BLIND, the manifest from .* is not JSON/]);
 run("manifest-empty", { html: page(), manifestText: JSON.stringify({ ...manifest, stored: [] }) }, 2, [/: BLIND, the manifest from .* lists nothing stored/]);
@@ -77,6 +84,21 @@ run(
   [/: BLIND, could not fetch http:\/\/127\.0\.0\.1:\d+\/privacy-manifest\.json: ECONNREFUSED/],
 );
 run("no-node", { html: page(), env: { PATH: "/nonexistent" } }, 2, [/: BLIND, node is not on PATH/]);
+
+// An engine that crashes exits 1, as a FAIL does, having compared nothing; the wrapper
+// must call that BLIND. Run a copy of the wrapper beside an engine that cannot parse.
+{
+  const checks = mkdtempSync(join(work, "crash-"));
+  copyFileSync(SCRIPT, join(checks, "privacy-matches-service.sh"));
+  writeFileSync(join(checks, "privacy.mjs"), "this is not javascript (\n");
+  const dir = mkdtempSync(join(work, "crash-site-"));
+  writeFileSync(join(dir, "privacy.html"), page());
+  const r = spawnSync("/bin/sh", [join(checks, "privacy-matches-service.sh"), dir], { encoding: "utf8", env: { PATH: process.env.PATH } });
+  const ok = r.status === 2 && /: BLIND, the check ended with exit 1 and without its verdict line/.test(r.stdout + r.stderr);
+  if (!ok) failures += 1;
+  console.log(`${ok ? "ok  " : "FAIL"} engine-crash: exit ${r.status} (want 2)`);
+  if (!ok) console.log((r.stdout + r.stderr).replace(/^/gm, "     | "));
+}
 
 rmSync(work, { recursive: true, force: true });
 console.log(failures === 0 ? "privacy-selftest: PASS" : `privacy-selftest: FAIL, ${failures} case(s)`);
