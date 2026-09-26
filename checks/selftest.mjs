@@ -175,7 +175,9 @@ ntpFail("fail-handler-attribute-uppercase", site('<p ONCLICK="x()">x</p>'), NO_H
 ntpFail("fail-handler-attribute-unquoted", site("<button onclick=go()>x</button>"), NO_HANDLER("onclick", "button"));
 ntpFail("fail-handler-attribute-single-quoted", site("<a href=\"/x\" onmouseover='x()'>x</a>"), NO_HANDLER("onmouseover", "a"));
 ntpFail("fail-handler-attribute-without-a-value", site("<p onclick>x</p>"), NO_HANDLER("onclick", "p"));
-ntpFail("fail-handler-attribute-after-other-attributes", site('<img alt="a>b" src="a.png" onload="x()">'), NO_HANDLER("onload", "img"));
+// A custom attribute that merely starts with "on" is caught too, which the engine's header says.
+ntpFail("fail-custom-attribute-starting-with-on-is-caught", site("<my-el once></my-el>"), NO_HANDLER("once", "my-el"));
+ntpFail("fail-handler-attribute-after-other-attributes",site('<img alt="a>b" src="a.png" onload="x()">'), NO_HANDLER("onload", "img"));
 
 // ---- R-023 failing: exit 1, and why. Each is site() plus one edit.
 ntpFail("fail-img-src-https", site('<img src="https://evil.example/a.png" alt="">'), OFF);
@@ -209,7 +211,9 @@ ntpFail("fail-a-href-in-comment", site('<!-- <a href="https://evil.example/"> --
 ntpFail("fail-a-href-in-script-text", site(`<script>var a = '<a href="https://evil.example/">';</script>`), OFF);
 ntpFail("fail-a-href-in-textarea", site('<textarea><a href="https://evil.example/"></textarea>'), OFF);
 ntpFail("fail-href-in-prose", site("<p>href=https://evil.example/</p>"), OFF);
-ntpFail("fail-css-attribute-selector-href", cssSite('a[href="https://evil.example/"] { color: red }'), OFF);
+// After a parse problem the rest of the file is read as raw text, so an <a href> there counts (the header says so).
+ntpFail("fail-a-href-after-a-parse-problem-counts", site('<p>ok</p></span><a href="https://github.com/jpslav">x</a>'), /index\.html:\d+: URL on another origin: https:\/\/github\.com\/jpslav \(an href may leave the site only on an <a>\)/);
+ntpFail("fail-css-attribute-selector-href",cssSite('a[href="https://evil.example/"] { color: red }'), OFF);
 
 // CSS: url(), including the escapes the LL-001 reviewers found, and @import.
 ntpFail("fail-inline-style-url", site('<div style="background: url(https://evil.example/x.png)"></div>'), OFF);
