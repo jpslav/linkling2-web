@@ -1,0 +1,25 @@
+name: ci
+
+# Every pull request and every push to main. No path filters and no matrix: the
+# ruleset "require ci-required on main" waits for a check literally named
+# `ci-required`, and a run that is skipped or renamed leaves a merge blocked forever.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ci-required:
+    name: ci-required
+    runs-on: ubuntu-latest
+    # A hung job would leave the required check pending indefinitely; time out instead.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: node checks/check.mjs
