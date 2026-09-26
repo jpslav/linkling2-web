@@ -64,6 +64,8 @@ run("third-cell", { html: page({ rows: [ROWS[0], ROWS[1].replace("</tr>", "<td>W
 run("duplicate-statement", { html: page().replace("</body>", "<p data-manifest=\"logged\">We log every address.</p></body>") }, 1, [/2 elements data-manifest="logged", not 1/, /: FAIL/]);
 run("table-in-template", { html: page().replace("<table>", "<template><table>").replace("</table>", "</table></template>") }, 1, [/no row data-stored="link-name"/, /: FAIL/]);
 run("hidden-statement", { html: page().replace("<p data-manifest='logged'>", "<p data-manifest='logged' hidden>") }, 1, [/data-manifest="logged" is marked hidden/, /: FAIL/]);
+run("table-in-nested-template", { html: page().replace("<table>", "<template><template>x</template><table>").replace("</table>", "</table></template>") }, 1, [/no row data-stored="link-name"/, /: FAIL/]);
+run("hidden-after-quote", { html: page().replace('<tr data-stored="link-name">', '<tr data-stored="link-name"hidden>') }, 1, [/row "link-name" is marked hidden/, /: FAIL/]);
 run("hidden-table", { html: page().replace("<table>", "<table hidden>") }, 1, [/1 table element\(s\) marked hidden/, /: FAIL/]);
 run("page-not-utf8", { html: Buffer.concat([Buffer.from(page()), Buffer.from([0xc3, 0x28])]) }, 2, [/: BLIND, .*privacy\.html is not UTF-8 text/]);
 run("no-page", {}, 2, [/: BLIND, cannot read .*privacy\.html: ENOENT/]);

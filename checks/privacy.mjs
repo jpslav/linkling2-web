@@ -129,7 +129,19 @@ function attr(tag, name) {
 }
 
 // A boolean `hidden` attribute in a start tag's attribute text.
-const isHidden = (attrs) => /(?:^|\s)hidden(?=[\s=\/]|$)/i.test(attrs);
+// Browsers also read `hidden` straight after a quoted value (data-x="y"hidden).
+const isHidden = (attrs) => /(?:^|[\s"'])hidden(?=[\s=\/]|$)/i.test(attrs);
+
+// Removes template, script, style and noscript elements innermost first, so one nested
+// inside another of the same name does not end the outer one early.
+function stripInert(html) {
+  const innermost = /<(template|script|style|noscript)\b[^>]*>(?:(?!<\1\b)[\s\S])*?(?:<\/\1\s*>|$)/gi;
+  for (let prev = null; prev !== html; ) {
+    prev = html;
+    html = html.replace(innermost, "");
+  }
+  return html;
+}
 
 // Rows keyed by data-stored, each { cells, hidden }; statements keyed by data-manifest,
 // each { text, hidden }; `unkeyed` counts body rows (rows with a <td>) that carry no
@@ -137,9 +149,7 @@ const isHidden = (attrs) => /(?:^|\s)hidden(?=[\s=\/]|$)/i.test(attrs);
 // hidden. Comments, and elements whose content a visitor never reads as the page
 // (template, script, style, noscript), are removed first.
 function readPage(html) {
-  const body = html
-    .replace(/<!--[\s\S]*?(?:-->|$)/g, "")
-    .replace(/<(template|script|style|noscript)\b[\s\S]*?(?:<\/\1\s*>|$)/gi, "");
+  const body = stripInert(html.replace(/<!--[\s\S]*?(?:-->|$)/g, ""));
   const rows = new Map();
   let unkeyed = 0;
   for (const m of body.matchAll(/<tr\b([^>]*)>([\s\S]*?)(?=<tr\b|<\/tr\s*>|<\/tbody|<\/table|$)/gi)) {
