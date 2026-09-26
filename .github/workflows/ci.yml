@@ -21,4 +21,9 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-      - run: node checks/check.mjs
+      # R-023: the site loads nothing from another origin.
+      - run: sh checks/no-third-party.sh
+      # R-021: the landing page says what Linkling is.
+      - run: sh checks/landing.sh
+      # The two checks above, tried on fixtures that must pass, fail and go blind.
+      - run: node checks/selftest.mjs
