@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-// The seed of the public site's CI check. Dependency-free on purpose: the site has
-// no build step and no package manager (ADR-0007). The full check is LL-006's.
+// The seed of the public site's CI check. Dependency-free on purpose: the site has no
+// build step and no package manager (linkling-api docs/adr/0007-repo-layout.md). The
+// full check is `checks/no-third-party.sh`, named in linkling-api
+// docs/adr/0008-third-party-services.md and not written yet.
 //
 //   node checks/check.mjs [site-root]      (default: the repo root)
 //
@@ -8,12 +10,14 @@
 //   - an .html file is not well-formed enough to parse: an unterminated comment, tag,
 //     <script>, <style>, <textarea> or <title>; a start tag that does not fit the tag
 //     grammar; a stray end tag; or an element left open (elements whose end tag HTML
-//     lets you omit, such as p, li and td, are excepted). One problem per file, the
-//     first, since everything after it is parsed from an unreliable state;
-//   - an .html or .css file has an src= or href= attribute, or a url(...), whose value
-//     starts with http: or https: (with or without the //) or is protocol-relative
-//     (//host). The site's own origin is not known yet, so every absolute URL counts
-//     as another origin (ADR-0008: nothing is loaded from anywhere else);
+//     lets you omit, such as p, li and td, are excepted). One parse problem per file,
+//     the first, since everything after it is parsed from an unreliable state;
+//   - the text of an .html or .css file holds src= or href= followed by a value, or a
+//     url(...), whose value starts with http: or https: (with or without the //) or is
+//     protocol-relative (//host). The site's own origin is not known yet, so every
+//     absolute URL counts as another origin (ADR-0008: the site loads nothing from any
+//     other origin). The scan reads raw text, so a match in a comment, a script or
+//     prose counts, and so does an outbound <a href> or a canonical link;
 //   - a symlink sits in the tree: it would be skipped, and skipped means unchecked.
 // Exit 2 (could not look) when the root or a file cannot be read, a file is not UTF-8
 // text (NUL bytes, or a UTF-16 byte order mark), or there is no index.html at the
@@ -24,7 +28,10 @@
 // Not covered here: srcset, action, formaction, poster, <meta http-equiv=refresh>,
 // @import "url" and image-set("url") strings, entity-encoded URLs (h&#116;tps://),
 // scripts and inline event handlers, .htm files, and everything about the privacy
-// page's content.
+// page's content. Two parse gaps: an HTML element that breaks out of svg or math
+// (<svg><div/></svg>) is treated as if it stayed inside, and the legacy
+// <script><!-- <script> ... </script> --> </script> form is reported as a stray end
+// tag.
 
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -82,18 +89,20 @@ const isBlank = (c) => c === " " || c === "\t" || c === "\n" || c === "\r" || c 
 // going quadratic.
 const MAX_URL_READ = 256;
 
-// A browser reads the function name after decoding CSS escapes, so u\72l( and \55RL(
-// are url( too: each letter may be itself, a backslash and itself, or a hex escape.
+// The CSS tokenizer compares the function name to "url" after decoding its escapes
+// (CSS Syntax 3, 4.3.4 "Consume an ident-like token"), so u\72l( and \55RL( are url( too:
+// each letter may be itself, a backslash and itself, or a hex escape.
 const cssLetter = (c) => {
   const hex = [c, c.toUpperCase()].map((x) => x.charCodeAt(0).toString(16)).join("|");
   return `(?:${c}|\\\\${c}|\\\\0{0,4}(?:${hex})(?:\\r\\n|[ \\t\\n\\r\\f])?)`;
 };
 const URL_OPEN = new RegExp([..."url"].map(cssLetter).join("") + "\\(", "gi");
 
-// The value of a url(...) whose contents start at `i`, read the way the CSS tokenizer
-// reads it: a backslash escape is up to six hex digits plus one optional whitespace, or
-// any one character, and a backslash before a newline (CR, LF, CRLF or FF) inside quotes
-// is a line continuation that keeps nothing. A quoted value ends at its closing quote,
+// The value of a url(...) whose contents start at `i`, read following the CSS tokenizer
+// on escapes, quotes, line continuations and end of file: a backslash escape is up to
+// six hex digits plus one optional whitespace, or any one character, and a backslash
+// before a newline (CR, LF, CRLF or FF) inside quotes is a line continuation that keeps
+// nothing. A quoted value ends at its closing quote,
 // at a raw newline or at the end of the file; an unquoted one at ")" or whitespace, or
 // at a backslash-newline, which makes the url unusable. What was read before a break
 // still counts: a reader that gave up there would pass what it never looked at.
