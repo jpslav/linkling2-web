@@ -11,22 +11,26 @@
 //     lets you omit, such as p, li and td, are excepted). One problem per file, the
 //     first, since everything after it is parsed from an unreliable state;
 //   - an .html or .css file has an src= or href= attribute, or a url(...), whose value
-//     is an absolute http(s) URL or a protocol-relative one (//host). The site's own
-//     origin is not known yet, so every absolute URL counts as another origin
-//     (ADR-0008: nothing is loaded from anywhere else);
+//     starts with http: or https: (with or without the //) or is protocol-relative
+//     (//host). The site's own origin is not known yet, so every absolute URL counts
+//     as another origin (ADR-0008: nothing is loaded from anywhere else);
 //   - a symlink sits in the tree: it would be skipped, and skipped means unchecked.
-// Exit 2 (could not look) when the root or a file cannot be read, or there is no
-// index.html at the root: zero pages checked is "never looked", not "all fine".
+// Exit 2 (could not look) when the root or a file cannot be read, a file is not UTF-8
+// text (NUL bytes, or a UTF-16 byte order mark), or there is no index.html at the
+// root: zero pages checked is "never looked", not "all fine".
+//
+// Every directory is walked except .git, .github, .claude, node_modules and checks.
 //
 // Not covered here: srcset, action, formaction, poster, <meta http-equiv=refresh>,
-// @import "url" strings, entity-encoded URLs (h&#116;tps://), scripts and inline event
-// handlers, .htm files, and everything about the privacy page's content.
+// @import "url" and image-set("url") strings, entity-encoded URLs (h&#116;tps://),
+// scripts and inline event handlers, .htm files, and everything about the privacy
+// page's content.
 
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const SKIP_DIRS = new Set(["node_modules", "checks"]);
+const SKIP_DIRS = new Set([".git", ".github", ".claude", "node_modules", "checks"]);
 const VOID = new Set([
   "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param",
   "source", "track", "wbr",
@@ -43,6 +47,7 @@ const END_TAG = /<\/([A-Za-z][A-Za-z0-9-]*)\s*>/y;
 class Blind extends Error {}
 
 const lineOf = (text, index) => text.slice(0, index).split("\n").length;
+const isForeign = (name) => name === "svg" || name === "math";
 
 function collect(root) {
   const files = [];
@@ -59,7 +64,7 @@ function collect(root) {
       if (entry.isSymbolicLink()) {
         problems.push(`${relative(root, path)}: symlink, not followed and so not checked`);
       } else if (entry.isDirectory()) {
-        if (!entry.name.startsWith(".") && !SKIP_DIRS.has(entry.name)) walk(path);
+        if (!SKIP_DIRS.has(entry.name)) walk(path);
       } else if (entry.isFile() && /\.(html|css)$/i.test(entry.name)) {
         files.push(path);
       }
@@ -69,18 +74,26 @@ function collect(root) {
   return { files, problems };
 }
 
+const cssUnescape = (s) =>
+  s.replace(/\\(?:([0-9a-fA-F]{1,6})\s?|([\s\S]))/g, (_, hex, ch) =>
+    hex === undefined ? ch : String.fromCodePoint(Math.min(parseInt(hex, 16), 0x10ffff)));
+
 function offOrigin(text) {
   const found = [];
   const patterns = [
-    /(?<![\w-])(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi,
-    /url\(\s*(?:"([^"]*)"|'([^']*)'|([^\s"')]*))\s*\)/gi,
+    [/(?<![\w-])(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi, (v) => v],
+    // Only the start of the value matters, so there is no closing-paren match to backtrack on.
+    [/url\(\s*(?:"((?:[^"\\]|\\[\s\S])*)"|'((?:[^'\\]|\\[\s\S])*)'|([^\s"')]*))/gi, cssUnescape],
   ];
-  for (const re of patterns) {
+  for (const [re, decode] of patterns) {
     for (const m of text.matchAll(re)) {
-      // Browsers drop tabs and newlines inside a URL, strip leading and trailing
-      // whitespace, and read a backslash as a slash in http(s) URLs.
-      const value = (m[1] ?? m[2] ?? m[3] ?? "").replace(/[\t\n\r]/g, "").trim().replace(/\\/g, "/");
-      if (/^(?:https?:)?\/\//i.test(value)) {
+      // Browsers strip leading and trailing C0 controls and spaces, drop tabs and
+      // newlines inside a URL, and read a backslash as a slash in http(s) URLs.
+      const value = decode(m[1] ?? m[2] ?? m[3] ?? "")
+        .replace(/^[\u0000- ]+|[\u0000- ]+$/g, "")
+        .replace(/[\t\n\r]/g, "")
+        .replace(/\\/g, "/");
+      if (/^(?:https?:|\/\/)/i.test(value)) {
         found.push(`${lineOf(text, m.index)}: URL on another origin: ${value}`);
       }
     }
@@ -95,9 +108,18 @@ function parseProblem(text) {
   let i = 0;
   while ((i = text.indexOf("<", i)) !== -1) {
     if (text.startsWith("<!--", i)) {
-      const end = text.indexOf("-->", i + 4);
-      if (end === -1) return at(i, "unterminated comment");
-      i = end + 3;
+      // A comment ends at --> or --!>, and <!--> and <!---> are already complete.
+      if (text.startsWith(">", i + 4)) {
+        i += 5;
+      } else if (text.startsWith("->", i + 4)) {
+        i += 6;
+      } else {
+        const end = /--!?>/g;
+        end.lastIndex = i + 4;
+        const c = end.exec(text);
+        if (!c) return at(i, "unterminated comment");
+        i = c.index + c[0].length;
+      }
     } else if (text.startsWith("<!", i) || text.startsWith("<?", i)) {
       const end = text.indexOf(">", i);
       if (end === -1) return at(i, "unterminated declaration");
@@ -122,9 +144,13 @@ function parseProblem(text) {
       const m = START_TAG.exec(text);
       if (!m) return at(i, "malformed start tag");
       const name = m[1].toLowerCase();
+      const start = i;
       i += m[0].length;
-      if (VOID.has(name)) continue;
-      stack.push({ name, index: i - m[0].length });
+      // Inside inline SVG and MathML, "/>" closes an element (<path/>); in HTML it is ignored.
+      const selfClosed =
+        m[3] === "/" && (isForeign(name) || stack.some((e) => isForeign(e.name)));
+      if (VOID.has(name) || selfClosed) continue;
+      stack.push({ name, index: start });
       if (RAW_TEXT.has(name)) {
         const close = new RegExp(`</${name}[\\s/>]`, "gi");
         close.lastIndex = i;
@@ -157,13 +183,18 @@ function run(root) {
   }
   let html = 0;
   for (const file of files) {
-    let text;
-    try {
-      text = readFileSync(file, "utf8");
-    } catch (e) {
-      throw new Blind(`cannot read ${relative(root, file)}: ${e.message}`);
-    }
     const name = relative(root, file);
+    let bytes;
+    try {
+      bytes = readFileSync(file);
+    } catch (e) {
+      throw new Blind(`cannot read ${name}: ${e.message}`);
+    }
+    const bom = bytes.length >= 2 && ((bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0xfe && bytes[1] === 0xff));
+    if (bom || bytes.includes(0)) {
+      throw new Blind(`${name} is not UTF-8 text (NUL bytes or a UTF-16 byte order mark), so it cannot be read`);
+    }
+    const text = bytes.toString("utf8");
     for (const p of offOrigin(text)) problems.push(`${name}:${p}`);
     if (/\.html$/i.test(file)) {
       html += 1;
