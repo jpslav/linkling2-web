@@ -1,0 +1,24 @@
+name: ci
+
+# Every pull request and every push to main. No path filters and no matrix: the
+# ruleset "require ci-required on main" waits for a check named exactly `ci-required`,
+# and a workflow that does not run leaves that check missing and the merge blocked.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ci-required:
+    name: ci-required
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: node checks/check.mjs
