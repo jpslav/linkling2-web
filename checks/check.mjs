@@ -76,37 +76,54 @@ function collect(root) {
 
 const isBlank = (c) => c === " " || c === "\t" || c === "\n" || c === "\r" || c === "\f";
 // Only the start of a URL decides whether it is on another origin, so a value is read
-// no further than this many characters that a browser would keep (leading control
-// characters and spaces, tabs and carriage returns are dropped, not counted). It also
-// keeps a run of "url(url(url(..." from going quadratic.
+// no further than this many characters that a browser would keep. Characters it drops
+// (leading control characters and spaces, tabs and newlines), whether written plainly
+// or as an escape, are not counted. The cap also keeps a run of "url(url(url(..." from
+// going quadratic.
 const MAX_URL_READ = 256;
 
-// The value of a url(...) whose contents start at `i`, read as the CSS tokenizer reads
-// it: a backslash escape is up to six hex digits plus one optional whitespace (or any
-// one character), a quoted value ends at its closing quote, at a raw newline or at the
-// end of the file, and an unquoted one at ")" or whitespace. What was read before a
-// break still counts: a reader that gave up there would pass what it never looked at.
+// A browser reads the function name after decoding CSS escapes, so u\72l( and \55RL(
+// are url( too: each letter may be itself, a backslash and itself, or a hex escape.
+const cssLetter = (c) => {
+  const hex = [c, c.toUpperCase()].map((x) => x.charCodeAt(0).toString(16)).join("|");
+  return `(?:${c}|\\\\${c}|\\\\0{0,4}(?:${hex})(?:\\r\\n|[ \\t\\n\\r\\f])?)`;
+};
+const URL_OPEN = new RegExp([..."url"].map(cssLetter).join("") + "\\(", "gi");
+
+// The value of a url(...) whose contents start at `i`, read the way the CSS tokenizer
+// reads it: a backslash escape is up to six hex digits plus one optional whitespace, or
+// any one character, and a backslash before a newline (CR, LF, CRLF or FF) inside quotes
+// is a line continuation that keeps nothing. A quoted value ends at its closing quote,
+// at a raw newline or at the end of the file; an unquoted one at ")" or whitespace, or
+// at a backslash-newline, which makes the url unusable. What was read before a break
+// still counts: a reader that gave up there would pass what it never looked at.
 function readCssUrl(text, i) {
   while (isBlank(text[i])) i += 1;
   const quote = text[i] === '"' || text[i] === "'" ? text[i++] : "";
   let out = "";
+  const keep = (ch) => {
+    if (ch === "\t" || ch === "\n" || ch === "\r" || (out === "" && ch <= " ")) return;
+    out += ch;
+  };
   while (i < text.length && out.length < MAX_URL_READ) {
     const c = text[i];
     if (c === "\\") {
       const hex = /^([0-9a-fA-F]{1,6})(?:\r\n|[ \t\n\r\f])?/.exec(text.slice(i + 1, i + 9));
+      const next = text[i + 1];
       if (hex) {
-        out += String.fromCodePoint(Math.min(parseInt(hex[1], 16), 0x10ffff));
+        keep(String.fromCodePoint(Math.min(parseInt(hex[1], 16), 0x10ffff)));
         i += 1 + hex[0].length;
+      } else if (next === "\n" || next === "\r" || next === "\f") {
+        if (!quote) break;
+        i += next === "\r" && text[i + 2] === "\n" ? 3 : 2;
       } else {
-        if (text[i + 1] !== undefined && text[i + 1] !== "\n") out += text[i + 1];
+        if (next !== undefined) keep(next);
         i += 2;
       }
     } else if (quote ? c === quote || c === "\n" : c === ")" || isBlank(c)) {
       break;
-    } else if (c === "\t" || c === "\r" || (out === "" && c <= " ")) {
-      i += 1;
     } else {
-      out += c;
+      keep(c);
       i += 1;
     }
   }
@@ -126,7 +143,7 @@ function offOrigin(text) {
   for (const m of text.matchAll(/(?<![\w-])(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi)) {
     add(m.index, m[1] ?? m[2] ?? m[3]);
   }
-  for (const m of text.matchAll(/url\(/gi)) add(m.index, readCssUrl(text, m.index + m[0].length));
+  for (const m of text.matchAll(URL_OPEN)) add(m.index, readCssUrl(text, m.index + m[0].length));
   return found;
 }
 
